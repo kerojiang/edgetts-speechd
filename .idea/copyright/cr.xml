@@ -1,0 +1,6 @@
+<component name="CopyrightManager">
+  <copyright>
+    <option name="notice" value="Copyright (c)  &amp;#36;today.year  All Rights Reserved&#10;项目名称:&amp;#36;project.name&#10;文件名称:&amp;#36;file.fileName&#10;修改日期:&amp;#36;today.format(&quot;yyyy/MM/dd HH:mm:ss&quot;)&#10;作者:kerojiang" />
+    <option name="myName" value="cr" />
+  </copyright>
+</component>

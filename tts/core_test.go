@@ -2,37 +2,43 @@
  * Copyright (c)  2024  All Rights Reserved
  * 项目名称:edgetts-speechd
  * 文件名称:core_test.go
- * 修改日期:2024/05/24 11:32:09
+ * 修改日期:2024/05/24 16:59:05
  * 作者:kerojiang
  */
 
 package tts
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+
+	"edgetts-speechd/player"
+)
 
 func TestGetTTSAudioFile(t *testing.T) {
-	type args struct {
-		text string
-		tts  TTSType
+	text := "你好啊,今天天气怎么样"
+	f, err := GetTTSAudioFile(text)
+	if err != nil {
+		t.Error(err)
 	}
-	tests := []struct {
-		name    string
-		args    args
-		want    string
-		wantErr bool
-	}{
-		// TODO: Add test cases.
+	fmt.Println(f)
+
+	err = player.PlayFile(f)
+	if err != nil {
+		t.Error(err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := GetTTSAudioFile(tt.args.text, tt.args.tts)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("GetTTSAudioFile() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if got != tt.want {
-				t.Errorf("GetTTSAudioFile() got = %v, want %v", got, tt.want)
-			}
-		})
+}
+
+func TestGetTTSAudioStream(t *testing.T) {
+	text := "你好啊,今天天气怎么样"
+	s, err := GetTTSAudioStream(text)
+	if err != nil {
+		t.Error(err)
+	}
+	// fmt.Println(f)
+
+	err = player.PlayStream(s)
+	if err != nil {
+		t.Error(err)
 	}
 }
