@@ -23,7 +23,7 @@ func main() {
 	args := os.Args[1:]
 
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
-		fmt.Println("直接输入要播报的文字,默认不生成语音文件\n -f 生成语音文件不播报\n -p 生成语音文件并播报\n -b 返回语音流数据 ")
+		fmt.Println("直接输入要播报的文字,默认不生成语音文件\n -f 生成语音文件不播报\n -p 生成语音文件并播报")
 	} else {
 		text := args[len(args)-1]
 
@@ -46,13 +46,6 @@ func main() {
 				if err != nil {
 					fmt.Println(err)
 				}
-			}
-			if args[0] == "-b" {
-				s, err := tts.GetTTSAudioStream(text)
-				if err != nil {
-					fmt.Println(err)
-				}
-				fmt.Println(s)
 			}
 
 		} else {
