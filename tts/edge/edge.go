@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"html"
 	"net/http"
+	"net/url"
 	"regexp"
 	"runtime/debug"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"golang.org/x/net/proxy"
 )
 
 type Communicate struct {
@@ -190,6 +192,18 @@ func (c *Communicate) Stream() (<-chan map[string]interface{}, error) {
 		// fmt.Printf("text=%s\n", text)
 		wsURL := WssURL + "&ConnectionId=" + connectID()
 		dialer := websocket.Dialer{}
+
+		socksProxy := "socks5://127.0.0.1:1080"
+		proxyUrl, err := url.Parse(socksProxy)
+		if err != nil {
+			return nil, err
+		}
+		dialerProxy, err := proxy.FromURL(proxyUrl, proxy.Direct)
+		if err != nil {
+			return nil, err
+		}
+		dialer.NetDial = dialerProxy.Dial
+
 		conn, _, err := dialer.Dial(wsURL, c.makeHeaders())
 		if err != nil {
 			return nil, err
