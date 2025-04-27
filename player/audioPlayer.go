@@ -29,7 +29,13 @@ func PlayFile(filePath string) error {
 		return err
 	}
 
-	return PlayStream(f)
+	err = PlayStream(f)
+
+	if err != nil {
+		return err
+	}
+	err = os.Remove(filePath)
+	return err
 }
 
 // PlayStream
@@ -69,5 +75,6 @@ func PlayStream(audioBytes []byte) error {
 	if err != nil {
 		return err
 	}
+
 	return nil
 }

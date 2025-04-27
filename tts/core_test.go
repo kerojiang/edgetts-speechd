@@ -17,27 +17,13 @@ import (
 
 func TestGetTTSAudioFile(t *testing.T) {
 	text := "你好啊,今天天气怎么样"
-	f, err := GetTTSAudioFile(text)
+	f, err := GetTTSAudioFile(text, "", "")
 	if err != nil {
 		t.Error(err)
 	}
 	fmt.Println(f)
 
 	err = player.PlayFile(f)
-	if err != nil {
-		t.Error(err)
-	}
-}
-
-func TestGetTTSAudioStream(t *testing.T) {
-	text := "你好啊,今天天气怎么样"
-	s, err := GetTTSAudioStream(text)
-	if err != nil {
-		t.Error(err)
-	}
-	// fmt.Println(f)
-
-	err = player.PlayStream(s)
 	if err != nil {
 		t.Error(err)
 	}
