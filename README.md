@@ -128,3 +128,4 @@ Edge TTS 通过 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量走代理；豆包 TTS 
 - 音频路径、语音列表写到标准输出，便于管道处理（如 `awk '{print $1}'`）
 - `[INFO]` / `[WARN]` 与错误信息写到标准错误
 - 成功退出码为 `0`；参数错误、列表拉取失败、生成或播放失败时退出码为 `1`
+- `-dv-tab` 与 `-doubao-refresh` 仅在豆包引擎下生效，用于 Edge 时会在 stderr 给出 `[WARN]`

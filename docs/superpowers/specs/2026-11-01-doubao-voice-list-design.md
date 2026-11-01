@@ -63,15 +63,20 @@ func ListDoubaoVoices(cookie string, tabs []DoubaoTab) ([]DoubaoVoice, error)
 
 - `doubaoVoiceListEndpoint` 为包级变量，默认 `https://www.doubao.com/alice/user_voice/recommend`，测试可替换
 - 每个分类一个 goroutine（`sync.WaitGroup`），分类内分页串行；结果按分类顺序归并，`style_id` 去重并合并 `Tabs`
-- `page_size=30`，`has_more=false` 或空列表停止；`page_index` 硬上限 100 防死循环
-- HTTP 客户端超时 30 秒；非 200 返回错误
+- `page_size=30`，`has_more=false` 或空列表停止；`page_index` 硬上限 50 防死循环（实测 rec 分类 13 页）
+- HTTP 客户端超时 30 秒；整次拉取用 `context.WithTimeout` 兜底（默认 2 分钟），非 200 返回错误
+- 响应必须包含 `data` 与 `data.ugc_voice_list` 键（用 `json.RawMessage` 判键）：`{}`、`data:null`、字段改名都报错，不当作空列表
 - `code != 0` 时：`code == 40200001`、`code == 710012001`、`msg` 含 `session auth` / `登录已过期` / `请重新登录` / `未登录`、或 HTTP 401/403 → 返回 `ErrDoubaoAuth`；其余返回带 code/msg 的错误
   - 710012001 是音色列表接口实测的登录过期码（`msg=登录已过期，请重新登录`），与合成链路的 40200001 不同
+  - 合成链路已用无效 Cookie 直连真实服务核实，失效响应固定为 `status_code=40200001 status_text=session auth,...`，故合成侧不判定 710012001
 - 认证重试封装为 `listDoubaoVoicesWithRetry(cookie string, tabs []DoubaoTab)`：第一次用 `resolveDoubaoCookie`，失败且 `errors.Is(err, ErrDoubaoAuth)` 时 `clearDoubaoCookie()` + `extractAndSaveDoubaoCookie()` 后重试一次
 
 ### `main.go`
 
 - `-l` 分支按 `-engine` 分流：`edge` 保持原逻辑；`doubao` 调 `tts.ListDoubaoVoices`
+- 抽成 `runList(stdout, stderr, engine, tab, cookie, refresh, deps)`，依赖用 `listDeps` 注入，便于单测；零值依赖返回错误而不是 panic
+- `edge` 引擎下给出 `-dv-tab` / `-doubao-refresh` 时，向 stderr 输出 `[WARN]` 说明已忽略
+- 列表失败写 stderr 并以退出码 1 结束
 - 新增 `-dv-tab`（默认空 = 全部）；非法值报错并返回
 - 输出格式沿用 Edge 风格，便于 `awk '{print $1}'` 取 ID：
 
@@ -86,10 +91,14 @@ zh_female_wenroutaozi_uranus_bigtts (rec,female) - 温柔桃子（升级版）
 
 - 分页与去重：`httptest.Server` 返回两页，同 `style_id` 跨分类出现，验证合并与 `BV` 过滤
 - 认证重试：第一次返回 `40200001`，第二次成功，验证调用了 Edge 提取（注入 fake extractor）
-- 分类参数校验：非法 `-dv-tab` 返回错误
+- 认证码覆盖：`40200001`、`710012001`、HTTP 401/403 均识别为 `ErrDoubaoAuth`；非认证错误不重试
+- 响应结构严格性：`{}`、`data:null`、缺 `ugc_voice_list` 键、`ugc_voice_list:null`、`data` 非对象均报错；合法空列表不报错
+- 分页上限与整体超时：`has_more` 恒 true 时报「分页超过上限」；超时返回 `context.DeadlineExceeded`
+- 分类参数校验：非法 `-dv-tab` 返回错误；分类名大小写不敏感
+- CLI 层（`main_test.go`）：输出格式、刷新日志走 stderr、四类错误、Edge 回归、零值依赖、Edge 下的豆包参数警告
 
 ## 留给实现者的决定
 
-- 并发失败时是否取消其余分类：采用「任一分类失败即整体失败」，不引入 `context` 取消
+- 并发失败时是否取消其余分类：采用「任一分类失败即整体失败」；`context` 仅用于整次拉取的总超时，不做跨分类提前取消
 - 输出分类顺序固定为 `rec,female,male,characters,accent`
 - 不做终端宽度对齐，不引入表格库
