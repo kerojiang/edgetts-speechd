@@ -90,3 +90,27 @@ go test -tags integration ./player/ -run TestPlayReal   ✓（真出声不挂起
 ./edgetts 播放（Edge/豆包）   ✓ 快速出声、无外部播放器、成功静默
 speechd 活跃环境播放   ✓ 3.7s（此前 ffplay 卡 60s+）
 ```
+
+## 流式播放（2026-11-02 追加，解决长文本首声等待）
+
+### 问题
+用户长文本（一页书，约 740 字）朗读「等了半天」：`GetAudioBytes` 先逐句**串行**合成完整音频再播放，首声 = 完整合成时间。实测合成耗时 ∝ 文本长度（100字 2.9s / 400字 9.9s / 800字 18.8s / 1500字 29s）。
+
+### 方案（流式边合成边播）
+- `player.PlayOggChunks(chunks <-chan []byte)`：逐段解码 Ogg Opus（`pcmChunkReader`），流式喂给 oto 播放。
+- `DoubaoTTS.SynthesizeStream(text, out)`：多段**并行**合成（`doubaoParallelLimit=6`），首段完成立即送入 `out`，按序保序。
+- `main.go` 豆包播放模式改用 `streamPlayDoubao`（Edge 保持整段文件）。
+- `doubaoParallelChunkBytes=100`（约 33 字/段），首段合成约 1.15s。
+
+### 实测（740 字长文本首声）
+| 方案 | 首声 |
+|---|---|
+| 串行合成（先全部再播放） | 约 17s |
+| 并行合成（先全部再播放） | 约 5.8s |
+| **流式播放（边合成边播）** | **约 1s**（首次冷启动 5.2s，后续稳定） |
+
+### 关键验证
+- 拼接多个独立 Ogg Opus 流（每段含 OpusHead）可被 `decodeOpus` 解码（中间 OpusHead 跳过），实测 8 段 → 23.56s PCM 正常。
+- 豆包并行连接 8 并发无限流（实测）。
+- 短文本流式正常（2.8s），无外部播放器残留。
+
