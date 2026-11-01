@@ -11,6 +11,7 @@ package tts
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -128,6 +129,38 @@ func ListDoubaoVoices(cookie string, tabs []DoubaoTab) ([]DoubaoVoice, error) {
 	}
 
 	return mergeDoubaoVoices(tabs, results), nil
+}
+
+// ListDoubaoVoicesWithCookie 按 Cookie 优先级拉取音色。
+// 登录态失效时与合成路径一致：清缓存、强制从 Edge 重取、重试一次。
+func ListDoubaoVoicesWithCookie(explicitCookie string, tabs []DoubaoTab) ([]DoubaoVoice, error) {
+	cookie, err := resolveDoubaoCookie(explicitCookie)
+	if err != nil {
+		return nil, err
+	}
+
+	voices, err := ListDoubaoVoices(cookie, tabs)
+	if err == nil {
+		return voices, nil
+	}
+	if !errors.Is(err, ErrDoubaoAuth) {
+		return nil, err
+	}
+
+	authErr := err
+	_ = clearDoubaoCookie()
+
+	newCookie, err := extractAndSaveDoubaoCookie()
+	if err != nil {
+		return nil, fmt.Errorf("豆包登录态失效且重新获取 Cookie 失败: %w（原始错误: %v）", err, authErr)
+	}
+
+	voices, err = ListDoubaoVoices(newCookie, tabs)
+	if err != nil {
+		return nil, fmt.Errorf("豆包登录态失效，请重新登录 Edge 中的豆包或设置 %s: %w", envDoubaoCookie, err)
+	}
+
+	return voices, nil
 }
 
 // fetchDoubaoVoicesByTab 翻完一个分类的全部分页，并过滤无效音色。

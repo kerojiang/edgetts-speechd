@@ -240,3 +240,66 @@ func TestListDoubaoVoicesPageLimit(t *testing.T) {
 		t.Errorf("错误信息应说明分页上限: %v", err)
 	}
 }
+
+// TestListDoubaoVoicesWithCookieRetry 验证登录态失效后清缓存并从 Edge 重取一次。
+func TestListDoubaoVoicesWithCookieRetry(t *testing.T) {
+	useTempConfigDir(t)
+
+	call := 0
+	startFakeVoiceList(t, func(w http.ResponseWriter, r *http.Request) {
+		call++
+		if call == 1 {
+			_, _ = w.Write([]byte(`{"code":40200001,"msg":"session auth failed","data":{}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"data":{"ugc_voice_list":[{"style_id":"zh_female_a_bigtts","name":"音色A"}],"has_more":false}}`))
+	})
+
+	extracted := 0
+	old := doubaoEdgeExtractor
+	doubaoEdgeExtractor = func() (string, error) {
+		extracted++
+		return "edge=1", nil
+	}
+	t.Cleanup(func() { doubaoEdgeExtractor = old })
+
+	voices, err := ListDoubaoVoicesWithCookie("bad=1", []DoubaoTab{{Key: "rec", RecommendType: 1}})
+	if err != nil {
+		t.Fatalf("重试后应成功，得到 %v", err)
+	}
+	if len(voices) != 1 || voices[0].StyleID != "zh_female_a_bigtts" {
+		t.Fatalf("结果 = %+v", voices)
+	}
+	if extracted != 1 {
+		t.Errorf("Edge 提取次数 = %d, 期望 1", extracted)
+	}
+	if call != 2 {
+		t.Errorf("接口调用次数 = %d, 期望 2", call)
+	}
+}
+
+// TestListDoubaoVoicesWithCookieNonAuthError 验证非认证错误不触发重试。
+func TestListDoubaoVoicesWithCookieNonAuthError(t *testing.T) {
+	useTempConfigDir(t)
+
+	call := 0
+	startFakeVoiceList(t, func(w http.ResponseWriter, r *http.Request) {
+		call++
+		_, _ = w.Write([]byte(`{"code":123456,"msg":"参数错误","data":{}}`))
+	})
+
+	extracted := 0
+	old := doubaoEdgeExtractor
+	doubaoEdgeExtractor = func() (string, error) {
+		extracted++
+		return "edge=1", nil
+	}
+	t.Cleanup(func() { doubaoEdgeExtractor = old })
+
+	if _, err := ListDoubaoVoicesWithCookie("bad=1", []DoubaoTab{{Key: "rec", RecommendType: 1}}); err == nil {
+		t.Fatal("期望返回错误")
+	}
+	if extracted != 0 || call != 1 {
+		t.Errorf("非认证错误不应重试：extracted=%d call=%d", extracted, call)
+	}
+}
