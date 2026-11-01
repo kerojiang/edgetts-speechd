@@ -443,3 +443,42 @@ func TestListDoubaoVoicesWithCookieExtractFailureKeepsAuth(t *testing.T) {
 		t.Errorf("应保留提取失败原因: %v", err)
 	}
 }
+
+// TestListDoubaoVoicesExpiredLoginCode 验证列表接口的登录过期码被识别为认证错误。
+func TestListDoubaoVoicesExpiredLoginCode(t *testing.T) {
+	startFakeVoiceList(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":710012001,"msg":"登录已过期，请重新登录","data":{}}`))
+	})
+
+	_, err := ListDoubaoVoices("sessionid=test", []DoubaoTab{{Key: "rec", RecommendType: 1}})
+	if !errors.Is(err, ErrDoubaoAuth) {
+		t.Fatalf("期望 ErrDoubaoAuth，得到 %v", err)
+	}
+}
+
+// TestListDoubaoVoicesWithCookieRetryExpiredCode 验证遇到列表登录过期码时自动从 Edge 重取。
+func TestListDoubaoVoicesWithCookieRetryExpiredCode(t *testing.T) {
+	useTempConfigDir(t)
+
+	var call atomic.Int64
+	startFakeVoiceList(t, func(w http.ResponseWriter, r *http.Request) {
+		if call.Add(1) == 1 {
+			_, _ = w.Write([]byte(`{"code":710012001,"msg":"登录已过期，请重新登录","data":{}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"data":{"ugc_voice_list":[{"style_id":"zh_female_a_bigtts","name":"音色A"}],"has_more":false}}`))
+	})
+
+	extracted := 0
+	old := doubaoEdgeExtractor
+	doubaoEdgeExtractor = func() (string, error) { extracted++; return "edge=1", nil }
+	t.Cleanup(func() { doubaoEdgeExtractor = old })
+
+	voices, err := ListDoubaoVoicesWithCookie("bad=1", []DoubaoTab{{Key: "rec", RecommendType: 1}})
+	if err != nil {
+		t.Fatalf("重试后应成功，得到 %v", err)
+	}
+	if len(voices) != 1 || extracted != 1 || call.Load() != 2 {
+		t.Fatalf("voices=%+v extracted=%d call=%d", voices, extracted, call.Load())
+	}
+}

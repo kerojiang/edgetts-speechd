@@ -34,6 +34,8 @@ const (
 	doubaoVoicePageSize = 30
 	// doubaoVoiceMaxPages 是单个分类的分页上限，防止 has_more 异常导致死循环。
 	doubaoVoiceMaxPages = 20
+	// doubaoVoiceListAuthCode 是音色列表接口的登录过期码，与合成链路的 40200001 不同。
+	doubaoVoiceListAuthCode = 710012001
 )
 
 // doubaoVoiceListEndpoint 是音色列表接口地址，测试中可替换。
@@ -264,8 +266,7 @@ func fetchDoubaoVoicePage(ctx context.Context, client *http.Client, cookie strin
 		return nil, fmt.Errorf("解析豆包音色响应失败: %w", err)
 	}
 
-	if result.Code == DoubaoStatusCodeAuth ||
-		strings.Contains(strings.ToLower(result.Msg), "session auth") {
+	if isDoubaoVoiceListAuthError(result.Code, result.Msg) {
 		return nil, fmt.Errorf("%w: code=%d msg=%s", ErrDoubaoAuth, result.Code, result.Msg)
 	}
 	if result.Code != 0 {
@@ -276,6 +277,23 @@ func fetchDoubaoVoicePage(ctx context.Context, client *http.Client, cookie strin
 	}
 
 	return &result, nil
+}
+
+// isDoubaoVoiceListAuthError 判断列表响应是否表示登录态失效。
+// 列表接口使用 710012001 / “登录已过期”，与合成链路的 40200001 不同。
+func isDoubaoVoiceListAuthError(code int, msg string) bool {
+	if code == DoubaoStatusCodeAuth || code == doubaoVoiceListAuthCode {
+		return true
+	}
+	if strings.Contains(strings.ToLower(msg), "session auth") {
+		return true
+	}
+	for _, keyword := range []string{"登录已过期", "请重新登录", "未登录"} {
+		if strings.Contains(msg, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeDoubaoVoices 按分类顺序归并结果，style_id 只保留首次出现，分类去重追加。
