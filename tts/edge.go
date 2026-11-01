@@ -411,13 +411,11 @@ func (e *EdgeTTS) GetAudioBytes(text string) ([]byte, error) {
 		select {
 		case chunk, ok := <-chunkChan:
 			if !ok {
-				fmt.Printf("Stream completed, collected %d bytes of audio data\n", len(audioData))
 				return audioData, nil
 			}
 
 			if chunk.Type == "audio" {
 				audioData = append(audioData, chunk.Data...)
-				fmt.Printf("Collected audio chunk: %d bytes (total: %d)\n", len(chunk.Data), len(audioData))
 			}
 		case err := <-errChan:
 			return nil, err
@@ -655,7 +653,6 @@ func (e *EdgeTTS) streamSingle(ctx context.Context) (<-chan *TTSChunk, <-chan er
 					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 						// Timeout might be normal - check if we received audio
 						if audioWasReceived {
-							fmt.Println("WebSocket timeout after receiving audio - assuming completion")
 							return
 						} else {
 							errChan <- fmt.Errorf("WebSocket read timeout before receiving audio: %w", err)
@@ -674,8 +671,7 @@ func (e *EdgeTTS) streamSingle(ctx context.Context) (<-chan *TTSChunk, <-chan er
 				case websocket.TextMessage:
 					if err := e.handleTextMessage(data, chunkChan, &audioWasReceived); err != nil {
 						if err == errStreamComplete {
-							fmt.Println("Stream completed successfully")
-							// Don't close errChan on normal completion
+							// 正常完成，不向 errChan 发送错误
 							return
 						}
 						errChan <- fmt.Errorf("failed to handle text message: %w", err)
@@ -732,7 +728,6 @@ func (e *EdgeTTS) handleTextMessage(data []byte, chunkChan chan<- *TTSChunk, aud
 	case "turn.end":
 		// Reset for next request
 		e.State.OffsetCompensation = e.State.LastDurationOffset + 8750000
-		fmt.Println("Received turn.end, ending stream")
 		*audioWasReceived = true
 		return errStreamComplete // Signal successful completion
 
