@@ -111,7 +111,6 @@ func extractDoubaoCookieFromEdge() (string, error) {
 		"--no-default-browser-check",
 		"--disable-gpu",
 		"--disable-extensions",
-		"--password-store=basic",
 		"about:blank",
 	)
 	cmd.Stdout = io.Discard

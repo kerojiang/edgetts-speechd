@@ -127,6 +127,11 @@ func clearDoubaoCookie() error {
 	return nil
 }
 
+// ClearDoubaoCookie 删除本地 Cookie 缓存，供命令行 -doubao-refresh 使用。
+func ClearDoubaoCookie() error {
+	return clearDoubaoCookie()
+}
+
 // resolveDoubaoCookie 按优先级解析可用的豆包 Cookie。
 // 缓存缺失或损坏时自动从 Edge 提取，并写回缓存。
 func resolveDoubaoCookie(explicit string) (string, error) {

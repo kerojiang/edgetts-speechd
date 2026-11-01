@@ -84,14 +84,14 @@ func TestClearDoubaoCookie(t *testing.T) {
 	if err := saveDoubaoCookie("cached=1"); err != nil {
 		t.Fatalf("保存缓存失败: %v", err)
 	}
-	if err := clearDoubaoCookie(); err != nil {
+	if err := ClearDoubaoCookie(); err != nil {
 		t.Fatalf("清空缓存失败: %v", err)
 	}
 	if _, err := loadCachedDoubaoCookie(); !os.IsNotExist(err) {
 		t.Fatalf("期望 os.IsNotExist，实际 %v", err)
 	}
 	// 重复清空不应报错
-	if err := clearDoubaoCookie(); err != nil {
+	if err := ClearDoubaoCookie(); err != nil {
 		t.Fatalf("重复清空缓存报错: %v", err)
 	}
 }
