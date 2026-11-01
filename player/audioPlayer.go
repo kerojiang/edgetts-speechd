@@ -219,3 +219,65 @@ func PlayStream(audioBytes []byte) error {
 	}
 	return playPCM(dec)
 }
+
+// pcmChunkReader 从 channel 逐段读取 Ogg Opus 字节，解码为 PCM 流供 oto 播放。
+// 每段是独立 Ogg Opus 流（含 OpusHead），decodeOpus 会跳过头包。
+type pcmChunkReader struct {
+	chunks  <-chan []byte
+	current []byte
+}
+
+// Read 实现 io.Reader：从 channel 取段解码，持续提供 PCM 字节；channel 关闭后返回 io.EOF。
+func (r *pcmChunkReader) Read(p []byte) (int, error) {
+	for len(r.current) == 0 {
+		ogg, ok := <-r.chunks
+		if !ok {
+			return 0, io.EOF
+		}
+		dec, err := decodeOpus(ogg)
+		if err != nil {
+			return 0, fmt.Errorf("流式解码失败: %w", err)
+		}
+		r.current = dec.pcm
+	}
+	n := copy(p, r.current)
+	r.current = r.current[n:]
+	return n, nil
+}
+
+// PlayOggChunks 流式播放多个 Ogg Opus 段（每段独立 Ogg 流）。
+// 阻塞直到所有段播完；channel 关闭即结束（合成方负责 close）。
+// 首声 ≈ 第一段合成完成（合成方并行合成，首段完成立即送入 channel）。
+func PlayOggChunks(chunks <-chan []byte) error {
+	first, ok := <-chunks
+	if !ok {
+		return fmt.Errorf("无音频数据（合成方未产生任何段）")
+	}
+	dec, err := decodeOpus(first)
+	if err != nil {
+		return fmt.Errorf("解码首段失败: %w", err)
+	}
+	ctx, err := ensureAudioContext(dec.sampleRate, dec.channels)
+	if err != nil {
+		return fmt.Errorf("音频设备初始化失败: %w", err)
+	}
+	r := &pcmChunkReader{chunks: chunks, current: dec.pcm}
+	p := ctx.NewPlayer(r)
+	p.Play()
+
+	// 流式时长未知：用较大超时兜底（长文本音频可达数分钟），防设备卡死。
+	deadline := time.Now().Add(30 * time.Minute)
+	for p.IsPlaying() {
+		if time.Now().After(deadline) {
+			p.Close()
+			return fmt.Errorf("播放超时（超过 30 分钟）")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err := p.Err(); err != nil {
+		p.Close()
+		return fmt.Errorf("播放失败: %w", err)
+	}
+	p.Close()
+	return nil
+}

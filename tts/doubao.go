@@ -85,8 +85,74 @@ func (d *DoubaoTTS) GetAudioFileTo(text string, outputPath string) (string, erro
 	return outputPath, nil
 }
 
+// SynthesizeStream 流式合成文本：把文本切成多段并行合成，按顺序写入 out。
+// 每段是独立 Ogg Opus 流（含 OpusHead）。合成方负责 close(out)。
+// 首段合成完成即写入 out，使播放方可立即开始（首声 ≈ 首段合成时间）。
+// 任一段失败返回错误（已写入的段仍由播放方处理）。
+func (d *DoubaoTTS) SynthesizeStream(text string, out chan<- []byte) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return errors.New("待合成文本为空")
+	}
+
+	segments := splitDoubaoText(text)
+	if len(segments) == 0 {
+		return errors.New("待合成文本为空")
+	}
+
+	// 每段一个缓冲 channel，并行合成
+	segChans := make([]chan []byte, len(segments))
+	for i := range segChans {
+		segChans[i] = make(chan []byte, 1)
+	}
+
+	sem := make(chan struct{}, doubaoParallelLimit)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+
+	for i, segment := range segments {
+		wg.Add(1)
+		go func(idx int, seg string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			data, err := d.synthesizeWithRetry(seg)
+			if err != nil {
+				mu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				mu.Unlock()
+				close(segChans[idx])
+				return
+			}
+			segChans[idx] <- data
+		}(i, segment)
+	}
+
+	// 按序读出并写入 out（流式：段完成即写，保序；写阻塞为背压，播放方取走才继续）
+	var writeErr error
+	for i := range segChans {
+		data, ok := <-segChans[i]
+		if !ok {
+			// 段合成失败
+			if firstErr != nil {
+				writeErr = fmt.Errorf("第 %d 段合成失败: %w", i+1, firstErr)
+			} else {
+				writeErr = fmt.Errorf("第 %d 段合成失败", i+1)
+			}
+			break
+		}
+		out <- data
+	}
+	wg.Wait()
+	return writeErr
+}
+
 // GetAudioBytes 合成音频并返回原始 Ogg Opus 字节。
-// 多段文本并行合成（保序拼接），大幅缩短长文本首声等待。
+// 多段文本并行合成（保序拼接），大幅缩短长文本合成耗时。
 func (d *DoubaoTTS) GetAudioBytes(text string) ([]byte, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {

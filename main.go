@@ -336,6 +336,14 @@ func main() {
 		return
 	}
 
+	// 播放模式：豆包用流式（边合成边播，首声≈首段合成时间），Edge 用整段文件
+	if dt, ok := ttsEngine.(*tts.DoubaoTTS); ok {
+		if err := streamPlayDoubao(dt, text); err != nil {
+			failf("播放失败：%v", err)
+		}
+		return
+	}
+
 	// 使用默认路径生成并播放
 	audioFile, err = ttsEngine.GetAudioFile(text)
 	if err != nil {
@@ -346,5 +354,28 @@ func main() {
 	err = player.PlayFile(audioFile)
 	if err != nil {
 		failf("播放音频失败：%v", err)
+	}
+}
+
+// streamPlayDoubao 流式播放豆包 TTS：并行合成段（首段完成即送入 channel），
+// player 逐段解码播放。首声 ≈ 第一段合成时间（约 1-2s），解决长文本首声等待。
+func streamPlayDoubao(dt *tts.DoubaoTTS, text string) error {
+	chunks := make(chan []byte, 8)
+	synthErr := make(chan error, 1)
+	go func() {
+		defer close(chunks)
+		synthErr <- dt.SynthesizeStream(text, chunks)
+	}()
+
+	if err := player.PlayOggChunks(chunks); err != nil {
+		// 播放失败：非阻塞读合成错误（SynthesizeStream 可能仍在写，进程即将退出）
+		return err
+	}
+	// 播放正常结束，取合成错误（若有）
+	select {
+	case err := <-synthErr:
+		return err
+	default:
+		return nil
 	}
 }
