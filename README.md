@@ -69,7 +69,13 @@ edgetts [选项] <文本>
 
 自动提取的做法：复制 Edge 的 `Local State` 与 `Default/Cookies` 到临时目录，启动 headless Edge 并通过 CDP 的 `Storage.getCookies` 读取 `doubao.com` 域的 Cookie。
 
-Cookie 失效时（服务端返回 `40200001` / `session auth`），程序会删除缓存、重新提取并重试一次。仍失败时提示：
+Cookie 失效时（服务端返回 `40200001` / `session auth`），程序会：
+
+1. 删除本地缓存；
+2. 无论 Cookie 来自参数、环境变量还是缓存，都重新从 Edge 提取；
+3. 用新 Cookie 重试一次。
+
+仍失败时提示：
 
 ```
 豆包登录态失效，请重新登录 Edge 中的豆包或设置 DOUBAO_COOKIE
@@ -81,7 +87,7 @@ Cookie 失效时（服务端返回 `40200001` / `session auth`），程序会删
 export DOUBAO_COOKIE="sessionid=...; ttwid=...; ..."
 ```
 
-注意：设置了 `-doubao-cookie` 或 `DOUBAO_COOKIE` 时，登录态失效后的重试仍会使用同一个值。需要强制重新从 Edge 提取时，请先取消这两个设置。
+注意：登录态失效后的重试一定会重新从 Edge 提取，即使设置了 `-doubao-cookie` 或 `DOUBAO_COOKIE`。因此只要 Edge 中保持登录，通常不需要手动维护 Cookie。
 
 ## 代理
 

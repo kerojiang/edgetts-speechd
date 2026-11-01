@@ -146,8 +146,12 @@ func (d *DoubaoTTS) synthesizeWithRetry(text string) ([]byte, error) {
 	var lastErr error
 
 	for attempt := 0; attempt < 2; attempt++ {
-		cookie, err := resolveDoubaoCookie(d.Config.Cookie)
+		cookie, err := d.attemptCookie(attempt)
 		if err != nil {
+			if lastErr != nil {
+				return nil, fmt.Errorf("豆包登录态失效且重新获取 Cookie 失败: %w（原始错误: %v）",
+					err, lastErr)
+			}
 			return nil, err
 		}
 
@@ -166,6 +170,17 @@ func (d *DoubaoTTS) synthesizeWithRetry(text string) ([]byte, error) {
 
 	return nil, fmt.Errorf("豆包登录态失效，请重新登录 Edge 中的豆包或设置 %s: %w",
 		envDoubaoCookie, lastErr)
+}
+
+// attemptCookie 返回本次尝试使用的 Cookie。
+// 第一次按「显式参数 > 环境变量 > 缓存 > Edge 提取」解析；
+// 登录态失效后的重试跳过显式参数与环境变量，强制重新从 Edge 提取，
+// 避免一直复用同一个失效值。
+func (d *DoubaoTTS) attemptCookie(attempt int) (string, error) {
+	if attempt == 0 {
+		return resolveDoubaoCookie(d.Config.Cookie)
+	}
+	return extractAndSaveDoubaoCookie()
 }
 
 // synthesize 完成一次完整的 WebSocket 语音合成。

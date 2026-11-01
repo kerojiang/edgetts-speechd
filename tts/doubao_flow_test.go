@@ -282,6 +282,64 @@ func TestDoubaoGetAudioFileToFallsBackToOgg(t *testing.T) {
 	}
 }
 
+// TestDoubaoRetryExtractsFromEdge 验证 Cookie 失效后即使有显式 Cookie 也会自动从 Edge 重新提取。
+func TestDoubaoRetryExtractsFromEdge(t *testing.T) {
+	useTempConfigDir(t)
+
+	attempts := 0
+	startFakeDoubao(t, func(conn *websocket.Conn) {
+		attempts++
+		readEvent(t, conn) // StartTask
+
+		if attempts == 1 {
+			sendResponse(t, conn, pbResponse{
+				Event:      "SessionFailed",
+				StatusCode: DoubaoStatusCodeAuth,
+				StatusText: "session auth, userID or appID is empty",
+			})
+			return
+		}
+
+		sendResponse(t, conn, pbResponse{TaskID: "t1", Event: "TaskStarted", StatusCode: 20000000})
+		readEvent(t, conn) // StartSession
+		sendResponse(t, conn, pbResponse{Event: "SessionStarted", StatusCode: 20000000})
+		readEvent(t, conn) // BidirectionalTTS
+		readEvent(t, conn) // EndTTS
+		sendResponse(t, conn, pbResponse{Event: "TTSResponse", StatusCode: 20000000, Data: []byte("OggS")})
+		sendResponse(t, conn, pbResponse{Event: "TTSEnded", StatusCode: 20000000})
+	})
+
+	originalExtractor := doubaoEdgeExtractor
+	extractCalls := 0
+	doubaoEdgeExtractor = func() (string, error) {
+		extractCalls++
+		return "fresh=1", nil
+	}
+	t.Cleanup(func() { doubaoEdgeExtractor = originalExtractor })
+
+	engine := NewDoubao()
+	engine.Config.Cookie = "invalid=1"
+
+	audio, err := engine.GetAudioBytes("你好。")
+	if err != nil {
+		t.Fatalf("期望重试成功，实际错误: %v", err)
+	}
+	if string(audio) != "OggS" {
+		t.Fatalf("音频 = %q, 期望 %q", string(audio), "OggS")
+	}
+	if extractCalls != 1 {
+		t.Fatalf("Edge 提取调用次数 = %d, 期望 1", extractCalls)
+	}
+
+	cached, err := loadCachedDoubaoCookie()
+	if err != nil {
+		t.Fatalf("读取缓存失败: %v", err)
+	}
+	if cached != "fresh=1" {
+		t.Fatalf("缓存 Cookie = %q, 期望 %q", cached, "fresh=1")
+	}
+}
+
 // TestNewEdgeWithConfigPropagates 验证 Edge 引擎的参数会传入内部实例。
 func TestNewEdgeWithConfigPropagates(t *testing.T) {
 	base := NewTTSConfig("zh-CN-XiaoxiaoNeural")

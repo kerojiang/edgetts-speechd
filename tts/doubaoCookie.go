@@ -151,6 +151,16 @@ func resolveDoubaoCookie(explicit string) (string, error) {
 		return "", fmt.Errorf("未找到豆包 Cookie：请设置 %s，或登录 Edge 中的豆包", envDoubaoCookie)
 	}
 
+	return extractAndSaveDoubaoCookie()
+}
+
+// extractAndSaveDoubaoCookie 从 Edge 提取 Cookie 并写入本地缓存。
+// 登录态失效后的重试路径会直接调用它，跳过显式参数与环境变量。
+func extractAndSaveDoubaoCookie() (string, error) {
+	if doubaoEdgeExtractor == nil {
+		return "", fmt.Errorf("未找到豆包 Cookie：请设置 %s，或登录 Edge 中的豆包", envDoubaoCookie)
+	}
+
 	cookie, err := doubaoEdgeExtractor()
 	if err != nil {
 		return "", fmt.Errorf("自动获取豆包 Cookie 失败: %w（请登录 Edge 中的豆包，或设置 %s）",
