@@ -96,7 +96,7 @@ func printHelp() {
 	fmt.Println("\n常用选项:")
 	fmt.Println("  -engine ENGINE   选择 TTS 引擎：edge（默认）或 doubao")
 	fmt.Println("  -v VOICE         指定语音 (Edge TTS)")
-	fmt.Println("  -l               列出 Edge TTS 所有可用语音")
+	fmt.Println("  -l               列出当前引擎所有可用语音")
 	fmt.Println("  -r RATE          指定语速 (Edge: +0%/-5%；豆包: +10%/1.1)")
 	fmt.Println("  -vol VOLUME      指定音量 (volume，格式:+0% 或 -10%，仅 Edge)")
 	fmt.Println("  -p PITCH         指定音调 (Edge: +0Hz/-50Hz；豆包: -3)")
@@ -108,12 +108,15 @@ func printHelp() {
 	fmt.Println("  -dv VOICE        指定豆包说话人 (默认: " + tts.DoubaoDefaultVoice + ")")
 	fmt.Println("  -doubao-cookie C 直接指定豆包登录 Cookie")
 	fmt.Println("  -doubao-refresh  强制重新从 Edge 提取豆包 Cookie")
+	fmt.Println("  -dv-tab TAB      列出豆包音色时限定分类 (rec/female/male/characters/accent)")
 	fmt.Println("\n示例:")
 	fmt.Printf("  %s \"你好，这是测试文本\"\n", name)
 	fmt.Printf("  %s -v zh-CN-XiaoxiaoNeural \"你好\"\n", name)
 	fmt.Printf("  %s -o output.mp3 \"你好，只生成音频文件不播放\"\n", name)
 	fmt.Printf("  %s -engine doubao \"你好，这是豆包语音\"\n", name)
 	fmt.Printf("  %s -l\n", name)
+	fmt.Printf("  %s -engine doubao -l\n", name)
+	fmt.Printf("  %s -engine doubao -l -dv-tab female\n", name)
 }
 
 func main() {
@@ -131,6 +134,7 @@ func main() {
 	doubaoVoice := flag.String("dv", "", "豆包说话人")
 	doubaoCookie := flag.String("doubao-cookie", "", "直接指定豆包登录 Cookie")
 	doubaoRefresh := flag.Bool("doubao-refresh", false, "强制重新从 Edge 提取豆包 Cookie")
+	doubaoTab := flag.String("dv-tab", "", "列出豆包音色时限定分类：rec/female/male/characters/accent")
 	showHelp := flag.Bool("h", false, "显示帮助信息")
 	showHelpLong := flag.Bool("help", false, "显示帮助信息")
 
@@ -146,16 +150,48 @@ func main() {
 		return
 	}
 
-	// 处理 -l 参数（列出 Edge TTS 语音）
+	// 处理 -l 参数（按引擎列出可用语音）
 	if *listVoices {
-		voices, err := tts.ListVoices()
-		if err != nil {
-			fmt.Printf("获取语音列表失败：%v\n", err)
-			return
-		}
-		fmt.Println("Edge TTS 可用的语音列表:")
-		for _, v := range voices {
-			fmt.Printf("%s (%s) - %s\n", v.ShortName, v.Locale, v.FriendlyName)
+		switch strings.ToLower(strings.TrimSpace(*engine)) {
+		case "doubao":
+			if *doubaoRefresh {
+				if err := tts.ClearDoubaoCookie(); err != nil {
+					fmt.Printf("清空豆包 Cookie 缓存失败：%v\n", err)
+					return
+				}
+				fmt.Println("[INFO] 已清空本地豆包 Cookie 缓存")
+			}
+
+			tabs, err := tts.SelectDoubaoTabs(*doubaoTab)
+			if err != nil {
+				fmt.Printf("获取语音列表失败：%v\n", err)
+				return
+			}
+
+			voices, err := tts.ListDoubaoVoicesWithCookie(*doubaoCookie, tabs)
+			if err != nil {
+				fmt.Printf("获取语音列表失败：%v\n", err)
+				return
+			}
+
+			fmt.Println("豆包可用的语音列表:")
+			for _, v := range voices {
+				fmt.Printf("%s (%s) - %s\n", v.StyleID, strings.Join(v.Tabs, ","), v.Name)
+			}
+
+		case "edge", "":
+			voices, err := tts.ListVoices()
+			if err != nil {
+				fmt.Printf("获取语音列表失败：%v\n", err)
+				return
+			}
+			fmt.Println("Edge TTS 可用的语音列表:")
+			for _, v := range voices {
+				fmt.Printf("%s (%s) - %s\n", v.ShortName, v.Locale, v.FriendlyName)
+			}
+
+		default:
+			fmt.Printf("不支持的引擎：%s（可选 edge 或 doubao）\n", *engine)
 		}
 		return
 	}

@@ -51,7 +51,16 @@ edgetts [选项] <文本>
 
 # 强制重新从 Edge 提取 Cookie
 ./edgetts -engine doubao -doubao-refresh -o output.mp3 "刷新登录态"
+
+# 列出豆包全部可用音色
+./edgetts -engine doubao -l
+
+# 只列某个分类
+./edgetts -engine doubao -l -dv-tab female
 ```
+
+豆包音色分类可选值：`rec`（推荐）、`female`（女声）、`male`（男声）、`characters`（角色）、`accent`（口音）。
+列表输出的第一列即 `-dv` 可用的 `style_id`，例如 `zh_female_wenroutaozi_uranus_bigtts`。
 
 豆包引擎的输出格式：
 
@@ -108,7 +117,8 @@ Edge TTS 通过 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量走代理；豆包 TTS 
 | `-o` | 空 | 只生成音频文件不播放 |
 | `--no-split` | false | 禁用句子分割 |
 | `--no-continuous` | false | 禁用连续播放 |
-| `-l` | false | 列出 Edge 可用语音 |
+| `-l` | false | 列出当前引擎的可用语音 |
+| `-dv-tab` | 空 | 列出豆包音色时限定分类：`rec`/`female`/`male`/`characters`/`accent` |
 | `-doubao-cookie` | 空 | 直接指定豆包 Cookie |
 | `-doubao-refresh` | false | 强制重新从 Edge 提取豆包 Cookie |
 | `-h` / `--help` | false | 显示帮助 |
