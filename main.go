@@ -24,8 +24,9 @@ func cleanText(text string) string {
 	// 移除控制字符和一些特殊符号，保留常用标点
 	var cleaned []rune
 	for _, r := range text {
-		// 保留字母、数字、中文字符、常用标点符号和空白字符
+		// 保留字母、数字、中文字符、标点符号和空白字符
 		if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.Is(unicode.Scripts["Han"], r) ||
+			unicode.IsPunct(r) ||
 			strings.ContainsRune(" \t\n\r!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", r) {
 			cleaned = append(cleaned, r)
 		}
@@ -113,6 +114,7 @@ func main() {
 	pitch := flag.String("p", "", "指定音调 (格式:+0Hz 或 -50Hz)")
 	outputFlag := flag.String("o", "", "只生成音频文件不播放，指定输出路径")
 	noSplit := flag.Bool("no-split", false, "禁用句子分割功能")
+	continuous := flag.Bool("continuous", true, "启用连续播放模式")
 	noContinuous := flag.Bool("no-continuous", false, "禁用连续播放模式")
 	listVoices := flag.Bool("l", false, "列出 Edge TTS 所有可用语音")
 	doubaoVoice := flag.String("dv", "", "豆包说话人")
@@ -181,7 +183,7 @@ func main() {
 			edgeTTS.Config.Pitch = *pitch
 		}
 		edgeTTS.Config.SentenceSplit = !*noSplit
-		edgeTTS.Config.ContinuousPlayback = !*noContinuous
+		edgeTTS.Config.ContinuousPlayback = *continuous && !*noContinuous
 
 		// 验证配置参数
 		if err := edgeTTS.Config.Validate(); err != nil {

@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 )
@@ -43,6 +44,9 @@ const doubaoReadTimeout = 30 * time.Second
 // doubaoUserAgent 使用桌面 Chrome UA，与插件环境保持一致。
 const doubaoUserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
 	"(KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0"
+
+// doubaoWSEndpoint 是语音合成 WebSocket 地址，测试中可替换。
+var doubaoWSEndpoint = DoubaoWSSEndpoint
 
 // DoubaoTTS 实现 Core 接口的豆包语音合成。
 type DoubaoTTS struct {
@@ -117,7 +121,7 @@ func (d *DoubaoTTS) GetAudioBytes(text string) ([]byte, error) {
 		return nil, errors.New("待合成文本为空")
 	}
 
-	segments := SplitTextBySentencesWithMaxLength(text, doubaoMaxTextBytes)
+	segments := splitDoubaoText(text)
 	if len(segments) == 0 {
 		return nil, errors.New("待合成文本为空")
 	}
@@ -218,10 +222,6 @@ func (d *DoubaoTTS) synthesize(text string, cookie string) ([]byte, error) {
 
 		messageType, raw, err := conn.ReadMessage()
 		if err != nil {
-			// 已收到音频但服务端未发 TTSEnded 时，按已完成处理。
-			if len(audio) > 0 {
-				return audio, nil
-			}
 			return nil, fmt.Errorf("读取豆包语音响应失败: %w", err)
 		}
 		if messageType != websocket.BinaryMessage {
@@ -235,6 +235,9 @@ func (d *DoubaoTTS) synthesize(text string, cookie string) ([]byte, error) {
 
 		if authErr := doubaoAuthError(response); authErr != nil {
 			return nil, authErr
+		}
+		if statusErr := doubaoStatusError(response); statusErr != nil {
+			return nil, statusErr
 		}
 
 		switch response.Event {
@@ -372,7 +375,7 @@ func doubaoWSURL() (string, error) {
 		query.Set(key, id)
 	}
 
-	return DoubaoWSSEndpoint + "?" + query.Encode(), nil
+	return doubaoWSEndpoint + "?" + query.Encode(), nil
 }
 
 // randomHex 生成 n 字节的随机十六进制字符串。
@@ -382,6 +385,61 @@ func randomHex(n int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+// splitDoubaoText 把文本切成不超过 doubaoMaxTextBytes 的片段。
+// 先按句子切分；对缺少标点的超长片段再按 UTF-8 字符边界硬切。
+func splitDoubaoText(text string) []string {
+	var segments []string
+	for _, segment := range SplitTextBySentencesWithMaxLength(text, doubaoMaxTextBytes) {
+		segments = append(segments, splitByRuneLimit(segment, doubaoMaxTextBytes)...)
+	}
+	return segments
+}
+
+// splitByRuneLimit 按字符边界切分文本，保证每段不超过 maxBytes 且不切碎 UTF-8。
+func splitByRuneLimit(text string, maxBytes int) []string {
+	if text == "" {
+		return nil
+	}
+	if len(text) <= maxBytes {
+		return []string{text}
+	}
+
+	var segments []string
+	var current strings.Builder
+
+	for _, r := range text {
+		size := utf8.RuneLen(r)
+		if size < 0 {
+			size = 1
+		}
+		if current.Len()+size > maxBytes {
+			segments = append(segments, current.String())
+			current.Reset()
+		}
+		current.WriteRune(r)
+	}
+	if current.Len() > 0 {
+		segments = append(segments, current.String())
+	}
+	return segments
+}
+
+// doubaoStatusError 把非成功的状态码转换成错误。
+// 已知进度事件即使带非成功状态码也继续走流程，避免误判。
+func doubaoStatusError(response pbResponse) error {
+	if response.StatusCode == 0 || response.StatusCode == DoubaoStatusCodeSuccess {
+		return nil
+	}
+
+	switch response.Event {
+	case "TaskStarted", "SessionStarted", "TTSResponse", "TTSEnded", "TTSSentenceStart", "TTSSentenceEnd":
+		return nil
+	}
+
+	return fmt.Errorf("豆包语音服务错误: event=%s status_code=%d status_text=%s",
+		response.Event, response.StatusCode, response.StatusText)
 }
 
 // doubaoAuthError 判断响应是否表示登录态失效。

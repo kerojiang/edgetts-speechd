@@ -81,6 +81,14 @@ Cookie 失效时（服务端返回 `40200001` / `session auth`），程序会删
 export DOUBAO_COOKIE="sessionid=...; ttwid=...; ..."
 ```
 
+注意：设置了 `-doubao-cookie` 或 `DOUBAO_COOKIE` 时，登录态失效后的重试仍会使用同一个值。需要强制重新从 Edge 提取时，请先取消这两个设置。
+
+## 代理
+
+Edge TTS 通过 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量走代理；豆包 TTS 为直连，不使用代理。
+
+旧版本的 `-p` 参数表示代理地址，现已改为音调，代理请改用环境变量。
+
 ## 全部参数
 
 | 参数 | 默认值 | 说明 |

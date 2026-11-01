@@ -68,3 +68,20 @@ func TestParseDoubaoPitch(t *testing.T) {
 		}
 	}
 }
+
+// TestCleanTextPreservesChinesePunctuation 验证中文标点不会被清理掉。
+func TestCleanTextPreservesChinesePunctuation(t *testing.T) {
+	input := "你好，世界。这是测试！真的吗？"
+	if got := cleanText(input); got != input {
+		t.Fatalf("cleanText = %q, 期望 %q", got, input)
+	}
+}
+
+// TestCleanTextRemovesControlCharacters 验证控制字符会被替换、空白会被规范化。
+func TestCleanTextRemovesControlCharacters(t *testing.T) {
+	got := cleanText("你好\x00世界\a  测试")
+	want := "你好世界 测试"
+	if got != want {
+		t.Fatalf("cleanText = %q, 期望 %q", got, want)
+	}
+}

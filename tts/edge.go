@@ -220,7 +220,16 @@ func NewEdgeTTS(text, voice string) (*EdgeTTS, error) {
 		voice = DEFAULT_VOICE
 	}
 
-	config := NewTTSConfig(voice)
+	return newEdgeWithConfig(text, NewTTSConfig(voice))
+}
+
+// newEdgeWithConfig 使用给定配置构造 EdgeTTS 实例。
+// 复制配置，避免调用方后续修改影响已构造的实例。
+func newEdgeWithConfig(text string, base *TTSConfig) (*EdgeTTS, error) {
+	config := *base
+	if config.Voice == "" {
+		config.Voice = DEFAULT_VOICE
+	}
 
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -247,7 +256,7 @@ func NewEdgeTTS(text, voice string) (*EdgeTTS, error) {
 	}
 
 	return &EdgeTTS{
-		Config:        config,
+		Config:        &config,
 		Texts:         texts,
 		OriginalTexts: originalTexts,
 		State: &CommunicateState{
@@ -275,7 +284,7 @@ func (e *EdgeTTS) GetAudioFile(text string) (string, error) {
 	defer audioFile.Close()
 
 	// Create new instance with the provided text
-	tts, err := NewEdgeTTS(text, e.Config.Voice)
+	tts, err := newEdgeWithConfig(text, e.Config)
 	if err != nil {
 		return "", fmt.Errorf("failed to create TTS instance: %w", err)
 	}
@@ -338,7 +347,7 @@ func (e *EdgeTTS) GetAudioFileTo(text string, outputPath string) (string, error)
 	defer audioFile.Close()
 
 	// Create new instance with the provided text
-	tts, err := NewEdgeTTS(text, e.Config.Voice)
+	tts, err := newEdgeWithConfig(text, e.Config)
 	if err != nil {
 		return "", fmt.Errorf("failed to create TTS instance: %w", err)
 	}
@@ -388,7 +397,7 @@ func (e *EdgeTTS) GetAudioBytes(text string) ([]byte, error) {
 	ctx := context.Background()
 
 	// Create new instance with the provided text
-	tts, err := NewEdgeTTS(text, e.Config.Voice)
+	tts, err := newEdgeWithConfig(text, e.Config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create TTS instance: %w", err)
 	}
