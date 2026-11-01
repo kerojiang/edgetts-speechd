@@ -11,6 +11,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode"
@@ -78,9 +80,18 @@ func parseDoubaoPitch(input string) (float64, error) {
 	return value, nil
 }
 
+// programName 返回当前可执行文件名，用于帮助信息。
+func programName() string {
+	if len(os.Args) > 0 && os.Args[0] != "" {
+		return filepath.Base(os.Args[0])
+	}
+	return "edgetts"
+}
+
 // printHelp 打印帮助信息
 func printHelp() {
-	fmt.Println("用法：edgetts-speechd [选项] <文本>")
+	name := programName()
+	fmt.Printf("用法：%s [选项] <文本>\n", name)
 	fmt.Println("\n直接输入要播报的文字")
 	fmt.Println("\n常用选项:")
 	fmt.Println("  -engine ENGINE   选择 TTS 引擎：edge（默认）或 doubao")
@@ -98,11 +109,11 @@ func printHelp() {
 	fmt.Println("  -doubao-cookie C 直接指定豆包登录 Cookie")
 	fmt.Println("  -doubao-refresh  强制重新从 Edge 提取豆包 Cookie")
 	fmt.Println("\n示例:")
-	fmt.Println("  edgetts-speechd \"你好，这是测试文本\"")
-	fmt.Println("  edgetts-speechd -v zh-CN-XiaoxiaoNeural \"你好\"")
-	fmt.Println("  edgetts-speechd -o output.mp3 \"你好，只生成音频文件不播放\"")
-	fmt.Println("  edgetts-speechd -engine doubao \"你好，这是豆包语音\"")
-	fmt.Println("  edgetts-speechd -l")
+	fmt.Printf("  %s \"你好，这是测试文本\"\n", name)
+	fmt.Printf("  %s -v zh-CN-XiaoxiaoNeural \"你好\"\n", name)
+	fmt.Printf("  %s -o output.mp3 \"你好，只生成音频文件不播放\"\n", name)
+	fmt.Printf("  %s -engine doubao \"你好，这是豆包语音\"\n", name)
+	fmt.Printf("  %s -l\n", name)
 }
 
 func main() {

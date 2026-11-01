@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 // TestParseDoubaoRate 验证豆包语速参数解析。
 func TestParseDoubaoRate(t *testing.T) {
@@ -66,6 +69,22 @@ func TestParseDoubaoPitch(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("parseDoubaoPitch(%q) = %v, 期望 %v", tc.input, got, tc.want)
 		}
+	}
+}
+
+// TestProgramName 验证帮助信息中的程序名取自可执行文件名。
+func TestProgramName(t *testing.T) {
+	original := os.Args
+	t.Cleanup(func() { os.Args = original })
+
+	os.Args = []string{"/usr/local/bin/edgetts", "你好"}
+	if got := programName(); got != "edgetts" {
+		t.Errorf("programName() = %q, 期望 %q", got, "edgetts")
+	}
+
+	os.Args = nil
+	if got := programName(); got != "edgetts" {
+		t.Errorf("空 os.Args 时 programName() = %q, 期望 %q", got, "edgetts")
 	}
 }
 
