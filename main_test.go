@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"os"
+	"strings"
 	"testing"
+
+	"edgetts-speechd/tts"
 )
 
 // TestParseDoubaoRate 验证豆包语速参数解析。
@@ -102,5 +107,124 @@ func TestCleanTextRemovesControlCharacters(t *testing.T) {
 	want := "你好世界 测试"
 	if got != want {
 		t.Fatalf("cleanText = %q, 期望 %q", got, want)
+	}
+}
+
+// TestRunListDoubaoPrintsVoices 验证豆包列表输出格式与分类参数传递。
+func TestRunListDoubaoPrintsVoices(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	cleared := false
+
+	deps := listDeps{
+		clearDoubaoCookie: func() error { cleared = true; return nil },
+		listDoubaoVoices: func(cookie string, tabs []tts.DoubaoTab) ([]tts.DoubaoVoice, error) {
+			if cookie != "sessionid=1" {
+				t.Errorf("cookie = %q", cookie)
+			}
+			if len(tabs) != 1 || tabs[0].Key != "female" {
+				t.Errorf("tabs = %+v", tabs)
+			}
+			return []tts.DoubaoVoice{{StyleID: "zh_female_a_bigtts", Name: "音色A", Tabs: []string{"female"}}}, nil
+		},
+	}
+
+	if err := runList(&stdout, &stderr, "doubao", "female", "sessionid=1", false, deps); err != nil {
+		t.Fatalf("runList 返回错误: %v", err)
+	}
+
+	want := "豆包可用的语音列表:\nzh_female_a_bigtts (female) - 音色A\n"
+	if stdout.String() != want {
+		t.Errorf("stdout = %q, 期望 %q", stdout.String(), want)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("未刷新时 stderr 应为空，实际 %q", stderr.String())
+	}
+	if cleared {
+		t.Error("未指定 -doubao-refresh 时不应清缓存")
+	}
+}
+
+// TestRunListRefreshWritesInfoToStderr 验证刷新提示不污染列表输出。
+func TestRunListRefreshWritesInfoToStderr(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	deps := listDeps{
+		clearDoubaoCookie: func() error { return nil },
+		listDoubaoVoices: func(string, []tts.DoubaoTab) ([]tts.DoubaoVoice, error) {
+			return nil, nil
+		},
+	}
+
+	if err := runList(&stdout, &stderr, "doubao", "", "", true, deps); err != nil {
+		t.Fatalf("runList 返回错误: %v", err)
+	}
+	if stdout.String() != "豆包可用的语音列表:\n" {
+		t.Errorf("stdout = %q, 期望仅包含列表标题", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "已清空本地豆包 Cookie 缓存") {
+		t.Errorf("stderr 应包含刷新提示，实际 %q", stderr.String())
+	}
+}
+
+// TestRunListDoubaoErrors 验证非法分类、未知引擎与拉取失败都返回错误。
+func TestRunListDoubaoErrors(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	t.Run("非法分类", func(t *testing.T) {
+		deps := listDeps{
+			clearDoubaoCookie: func() error { return nil },
+			listDoubaoVoices: func(string, []tts.DoubaoTab) ([]tts.DoubaoVoice, error) {
+				t.Fatal("非法分类不应发起请求")
+				return nil, nil
+			},
+		}
+		if err := runList(&stdout, &stderr, "doubao", "bogus", "", false, deps); err == nil {
+			t.Fatal("期望返回错误")
+		}
+	})
+
+	t.Run("未知引擎", func(t *testing.T) {
+		if err := runList(&stdout, &stderr, "bogus", "", "", false, listDeps{}); err == nil {
+			t.Fatal("期望返回错误")
+		}
+	})
+
+	t.Run("拉取失败", func(t *testing.T) {
+		deps := listDeps{
+			clearDoubaoCookie: func() error { return nil },
+			listDoubaoVoices: func(string, []tts.DoubaoTab) ([]tts.DoubaoVoice, error) {
+				return nil, errors.New("网络不可用")
+			},
+		}
+		if err := runList(&stdout, &stderr, "doubao", "", "", false, deps); err == nil {
+			t.Fatal("期望返回错误")
+		}
+	})
+
+	t.Run("清缓存失败", func(t *testing.T) {
+		deps := listDeps{
+			clearDoubaoCookie: func() error { return errors.New("权限不足") },
+		}
+		if err := runList(&stdout, &stderr, "doubao", "", "", true, deps); err == nil {
+			t.Fatal("期望返回错误")
+		}
+	})
+}
+
+// TestRunListEdge 验证 Edge 列表仍按原格式输出。
+func TestRunListEdge(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	deps := listDeps{
+		listEdgeVoices: func() ([]tts.Voice, error) {
+			return []tts.Voice{{ShortName: "zh-CN-XiaoxiaoNeural", Locale: "zh-CN", FriendlyName: "晓晓"}}, nil
+		},
+	}
+
+	if err := runList(&stdout, &stderr, "edge", "", "", false, deps); err != nil {
+		t.Fatalf("runList 返回错误: %v", err)
+	}
+
+	want := "Edge TTS 可用的语音列表:\nzh-CN-XiaoxiaoNeural (zh-CN) - 晓晓\n"
+	if stdout.String() != want {
+		t.Errorf("stdout = %q, 期望 %q", stdout.String(), want)
 	}
 }
