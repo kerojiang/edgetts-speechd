@@ -228,3 +228,74 @@ func TestRunListEdge(t *testing.T) {
 		t.Errorf("stdout = %q, 期望 %q", stdout.String(), want)
 	}
 }
+
+// TestRunListZeroDepsReturnsError 验证依赖为零值时返回错误而不是 panic。
+func TestRunListZeroDepsReturnsError(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	cases := []struct {
+		name    string
+		engine  string
+		refresh bool
+	}{
+		{"豆包未刷新", "doubao", false},
+		{"豆包刷新", "doubao", true},
+		{"Edge", "edge", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("零值依赖导致 panic: %v", r)
+				}
+			}()
+
+			if err := runList(&stdout, &stderr, tc.engine, "accent", "", tc.refresh, listDeps{}); err == nil {
+				t.Fatal("零值依赖应返回错误")
+			}
+		})
+	}
+}
+
+// TestRunListEdgeWarnsIgnoredDoubaoOptions 验证 Edge 引擎忽略豆包参数时给出警告。
+func TestRunListEdgeWarnsIgnoredDoubaoOptions(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	deps := listDeps{
+		listEdgeVoices: func() ([]tts.Voice, error) {
+			return []tts.Voice{{ShortName: "zh-CN-XiaoxiaoNeural", Locale: "zh-CN", FriendlyName: "晓晓"}}, nil
+		},
+	}
+
+	if err := runList(&stdout, &stderr, "edge", "female", "", true, deps); err != nil {
+		t.Fatalf("runList 返回错误: %v", err)
+	}
+
+	want := "Edge TTS 可用的语音列表:\nzh-CN-XiaoxiaoNeural (zh-CN) - 晓晓\n"
+	if stdout.String() != want {
+		t.Errorf("stdout = %q, 期望 %q", stdout.String(), want)
+	}
+
+	logs := stderr.String()
+	if !strings.Contains(logs, "-dv-tab") {
+		t.Errorf("应警告 -dv-tab 被忽略，实际 stderr = %q", logs)
+	}
+	if !strings.Contains(logs, "-doubao-refresh") {
+		t.Errorf("应警告 -doubao-refresh 被忽略，实际 stderr = %q", logs)
+	}
+}
+
+// TestRunListEdgeNoWarnWithoutDoubaoOptions 验证未给豆包参数时 Edge 不产生警告。
+func TestRunListEdgeNoWarnWithoutDoubaoOptions(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	deps := listDeps{
+		listEdgeVoices: func() ([]tts.Voice, error) { return nil, nil },
+	}
+
+	if err := runList(&stdout, &stderr, "edge", "", "", false, deps); err != nil {
+		t.Fatalf("runList 返回错误: %v", err)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("不应有警告，实际 stderr = %q", stderr.String())
+	}
+}

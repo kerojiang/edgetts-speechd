@@ -109,6 +109,9 @@ func defaultListDeps() listDeps {
 func runList(stdout, stderr io.Writer, engine, tab, cookie string, refresh bool, deps listDeps) error {
 	switch strings.ToLower(strings.TrimSpace(engine)) {
 	case "doubao":
+		if deps.clearDoubaoCookie == nil || deps.listDoubaoVoices == nil {
+			return fmt.Errorf("内部错误：豆包列表依赖未初始化")
+		}
 		if refresh {
 			if err := deps.clearDoubaoCookie(); err != nil {
 				return fmt.Errorf("清空豆包 Cookie 缓存失败：%w", err)
@@ -132,6 +135,16 @@ func runList(stdout, stderr io.Writer, engine, tab, cookie string, refresh bool,
 		}
 
 	case "edge", "":
+		if deps.listEdgeVoices == nil {
+			return fmt.Errorf("内部错误：Edge 列表依赖未初始化")
+		}
+		// 豆包专属参数在 Edge 引擎下不生效，明确提示而不是静默忽略。
+		if strings.TrimSpace(tab) != "" {
+			fmt.Fprintln(stderr, "[WARN] -dv-tab 仅对豆包引擎生效，已忽略")
+		}
+		if refresh {
+			fmt.Fprintln(stderr, "[WARN] -doubao-refresh 仅对豆包引擎生效，已忽略")
+		}
 		voices, err := deps.listEdgeVoices()
 		if err != nil {
 			return err
