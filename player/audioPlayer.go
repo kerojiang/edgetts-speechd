@@ -9,72 +9,64 @@
 package player
 
 import (
-	"bytes"
+	"fmt"
 	"os"
-	"time"
-
-	"github.com/ebitengine/oto/v3"
-	"github.com/hajimehoshi/go-mp3"
+	"os/exec"
 )
 
-// PlayFile
-//
-//	@Description: 播放音频文件
-//	@param filePath
-//	@return error
+// PlayFile 播放音频文件（使用 ffmpeg 支持 MP3 和 AAC）
 func PlayFile(filePath string) error {
-	f, err := os.ReadFile(filePath)
-
-	if err != nil {
-		return err
+	// 检查文件是否存在
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return fmt.Errorf("文件不存在：%s", filePath)
 	}
 
-	err = PlayStream(f)
+	// 使用 ffplay 播放音频（支持 MP3、AAC 等多种格式）
+	// -nodisp: 不显示视频
+	// -autoexit: 播放完成后自动退出
+	// -loglevel quiet: 不显示日志信息
+	cmd := exec.Command("ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", filePath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
-	if err != nil {
-		return err
-	}
-	err = os.Remove(filePath)
-	return err
-}
-
-// PlayStream
-//
-//	@Description: 播放音频数据流
-//	@param audioBytes
-//	@return error
-func PlayStream(audioBytes []byte) error {
-	reader := bytes.NewReader(audioBytes)
-	dec, err := mp3.NewDecoder(reader)
-	if err != nil {
-		return err
-	}
-
-	op := &oto.NewContextOptions{
-		SampleRate:   dec.SampleRate(),
-		ChannelCount: 2,
-		Format:       oto.FormatSignedInt16LE,
-	}
-
-	otoCtx, readyChan, err := oto.NewContext(op)
-	if err != nil {
-		return err
-	}
-
-	<-readyChan
-
-	player := otoCtx.NewPlayer(dec)
-
-	player.Play()
-
-	for player.IsPlaying() {
-		time.Sleep(time.Millisecond)
-	}
-
-	err = player.Close()
-	if err != nil {
-		return err
+	if err := cmd.Run(); err != nil {
+		// 如果 ffplay 不可用，尝试使用 ffmpeg 播放到音频设备
+		cmd = exec.Command("ffmpeg", "-i", filePath, "-f", "alsa", "default", "-loglevel", "quiet")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		
+		if err := cmd.Run(); err != nil {
+			// 如果 ffmpeg 也不可用，尝试使用 aplay（仅支持 WAV/PCM）
+			cmd = exec.Command("aplay", filePath)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("所有播放器都失败：%w", err)
+			}
+		}
 	}
 
 	return nil
+}
+
+// PlayStream 播放音频数据流（写入临时文件后播放）
+func PlayStream(audioBytes []byte) error {
+	// 创建临时文件
+	tmpFile, err := os.CreateTemp("", "tts_audio_*.mp3")
+	if err != nil {
+		return fmt.Errorf("创建临时文件失败：%w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	// 写入音频数据
+	if _, err := tmpFile.Write(audioBytes); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("写入音频数据失败：%w", err)
+	}
+	tmpFile.Close()
+
+	// 播放临时文件
+	return PlayFile(tmpPath)
 }
