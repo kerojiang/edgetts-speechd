@@ -148,6 +148,12 @@ func runList(stdout, stderr io.Writer, engine, tab, cookie string, refresh bool,
 	return nil
 }
 
+// failf 把错误写入 stderr 并以非零状态退出。
+func failf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	os.Exit(1)
+}
+
 // printHelp 打印帮助信息
 func printHelp() {
 	name := programName()
@@ -213,7 +219,7 @@ func main() {
 	// 处理 -l 参数（按引擎列出可用语音）
 	if *listVoices {
 		if err := runList(os.Stdout, os.Stderr, *engine, *doubaoTab, *doubaoCookie, *doubaoRefresh, defaultListDeps()); err != nil {
-			fmt.Printf("获取语音列表失败：%v\n", err)
+			fmt.Fprintf(os.Stderr, "获取语音列表失败：%v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -225,9 +231,9 @@ func main() {
 
 	// 如果没有文本内容，则显示帮助信息
 	if text == "" {
-		fmt.Println("请输入要播报的文字内容")
+		fmt.Fprintln(os.Stderr, "请输入要播报的文字内容")
 		printHelp()
-		return
+		os.Exit(1)
 	}
 
 	// 按引擎类型构造 TTS 实例
@@ -257,8 +263,7 @@ func main() {
 
 		// 验证配置参数
 		if err := edgeTTS.Config.Validate(); err != nil {
-			fmt.Printf("参数验证失败：%v\n", err)
-			return
+			failf("参数验证失败：%v", err)
 		}
 
 		ttsEngine = edgeTTS
@@ -276,16 +281,14 @@ func main() {
 		if *rate != "" {
 			parsed, err := parseDoubaoRate(*rate)
 			if err != nil {
-				fmt.Printf("参数验证失败：%v\n", err)
-				return
+				failf("参数验证失败：%v", err)
 			}
 			doubaoTTS.Config.Rate = parsed
 		}
 		if *pitch != "" {
 			parsed, err := parseDoubaoPitch(*pitch)
 			if err != nil {
-				fmt.Printf("参数验证失败：%v\n", err)
-				return
+				failf("参数验证失败：%v", err)
 			}
 			doubaoTTS.Config.Pitch = parsed
 		}
@@ -295,22 +298,19 @@ func main() {
 
 		if *doubaoRefresh {
 			if err := tts.ClearDoubaoCookie(); err != nil {
-				fmt.Printf("清空豆包 Cookie 缓存失败：%v\n", err)
-				return
+				failf("清空豆包 Cookie 缓存失败：%v", err)
 			}
 			fmt.Fprintln(os.Stderr, "[INFO] 已清空本地豆包 Cookie 缓存")
 		}
 
 		if err := doubaoTTS.Config.Validate(); err != nil {
-			fmt.Printf("参数验证失败：%v\n", err)
-			return
+			failf("参数验证失败：%v", err)
 		}
 
 		ttsEngine = doubaoTTS
 
 	default:
-		fmt.Printf("不支持的引擎：%s（可选 edge 或 doubao）\n", *engine)
-		return
+		failf("不支持的引擎：%s（可选 edge 或 doubao）", *engine)
 	}
 
 	// 生成音频文件
@@ -319,8 +319,7 @@ func main() {
 		// 使用指定输出路径，不播放
 		audioFile, err = ttsEngine.GetAudioFileTo(text, *outputFlag)
 		if err != nil {
-			fmt.Printf("生成音频文件失败：%v\n", err)
-			return
+			failf("生成音频文件失败：%v", err)
 		}
 		fmt.Println(audioFile)
 		return
@@ -329,16 +328,14 @@ func main() {
 	// 使用默认路径生成并播放
 	audioFile, err = ttsEngine.GetAudioFile(text)
 	if err != nil {
-		fmt.Printf("生成音频文件失败：%v\n", err)
-		return
+		failf("生成音频文件失败：%v", err)
 	}
 	fmt.Printf("音频文件已生成：%s\n", audioFile)
 
 	// 播放音频文件
 	err = player.PlayFile(audioFile)
 	if err != nil {
-		fmt.Printf("播放音频失败：%v\n", err)
-		return
+		failf("播放音频失败：%v", err)
 	}
 	fmt.Println("音频播放完成")
 }
