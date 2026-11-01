@@ -198,6 +198,30 @@ func TestListDoubaoVoicesErrors(t *testing.T) {
 				_, _ = w.Write([]byte(`{"code":0,"data":null}`))
 			},
 		},
+		{
+			name: "data缺少ugc_voice_list键",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"code":0,"data":{"has_more":false}}`))
+			},
+		},
+		{
+			name: "data缺少ugc_voice_list键且带未知字段",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"code":0,"data":{"voice_list":[],"has_more":false}}`))
+			},
+		},
+		{
+			name: "ugc_voice_list为null",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"code":0,"data":{"ugc_voice_list":null,"has_more":false}}`))
+			},
+		},
+		{
+			name: "data不是对象",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"code":0,"data":[]}`))
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -480,5 +504,20 @@ func TestListDoubaoVoicesWithCookieRetryExpiredCode(t *testing.T) {
 	}
 	if len(voices) != 1 || extracted != 1 || call.Load() != 2 {
 		t.Fatalf("voices=%+v extracted=%d call=%d", voices, extracted, call.Load())
+	}
+}
+
+// TestListDoubaoVoicesEmptyListIsOK 验证合法的空列表（键存在但为空）不算错误。
+func TestListDoubaoVoicesEmptyListIsOK(t *testing.T) {
+	startFakeVoiceList(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":0,"data":{"ugc_voice_list":[],"has_more":false}}`))
+	})
+
+	voices, err := ListDoubaoVoices("sessionid=test", []DoubaoTab{{Key: "rec", RecommendType: 1}})
+	if err != nil {
+		t.Fatalf("空列表不应报错: %v", err)
+	}
+	if len(voices) != 0 {
+		t.Fatalf("音色数 = %d, 期望 0", len(voices))
 	}
 }

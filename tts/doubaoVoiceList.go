@@ -33,7 +33,8 @@ const (
 	// doubaoVoicePageSize 是单页请求条数，与插件保持一致。
 	doubaoVoicePageSize = 30
 	// doubaoVoiceMaxPages 是单个分类的分页上限，防止 has_more 异常导致死循环。
-	doubaoVoiceMaxPages = 20
+	// 实测 rec 分类 13 页（385 条），留足余量；超过 50 页说明接口行为异常。
+	doubaoVoiceMaxPages = 50
 	// doubaoVoiceListAuthCode 是音色列表接口的登录过期码，与合成链路的 40200001 不同。
 	doubaoVoiceListAuthCode = 710012001
 )
@@ -64,14 +65,17 @@ type doubaoVoiceItem struct {
 	Name    string `json:"name"`
 }
 
+// doubaoVoiceListData 是响应 data 字段。
+type doubaoVoiceListData struct {
+	UGCVoiceList []doubaoVoiceItem `json:"ugc_voice_list"`
+	HasMore      bool              `json:"has_more"`
+}
+
 // doubaoVoiceListResponse 是接口响应结构。
 type doubaoVoiceListResponse struct {
-	Code int    `json:"code"`
-	Msg  string `json:"msg"`
-	Data *struct {
-		UGCVoiceList []doubaoVoiceItem `json:"ugc_voice_list"`
-		HasMore      bool              `json:"has_more"`
-	} `json:"data"`
+	Code int                  `json:"code"`
+	Msg  string               `json:"msg"`
+	Data *doubaoVoiceListData `json:"data"`
 }
 
 // DoubaoTabs 返回全部音色分类，顺序固定。
@@ -261,22 +265,48 @@ func fetchDoubaoVoicePage(ctx context.Context, client *http.Client, cookie strin
 		return nil, fmt.Errorf("豆包音色接口返回 HTTP %d", resp.StatusCode)
 	}
 
-	var result doubaoVoiceListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	var payload struct {
+		Code int             `json:"code"`
+		Msg  string          `json:"msg"`
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, fmt.Errorf("解析豆包音色响应失败: %w", err)
 	}
 
-	if isDoubaoVoiceListAuthError(result.Code, result.Msg) {
-		return nil, fmt.Errorf("%w: code=%d msg=%s", ErrDoubaoAuth, result.Code, result.Msg)
+	if isDoubaoVoiceListAuthError(payload.Code, payload.Msg) {
+		return nil, fmt.Errorf("%w: code=%d msg=%s", ErrDoubaoAuth, payload.Code, payload.Msg)
 	}
-	if result.Code != 0 {
-		return nil, fmt.Errorf("豆包音色接口错误: code=%d msg=%s", result.Code, result.Msg)
+	if payload.Code != 0 {
+		return nil, fmt.Errorf("豆包音色接口错误: code=%d msg=%s", payload.Code, payload.Msg)
 	}
-	if result.Data == nil {
+	if len(payload.Data) == 0 || string(payload.Data) == "null" {
 		return nil, errors.New("豆包音色响应缺少 data 字段")
 	}
 
-	return &result, nil
+	// 用 RawMessage 检查键是否存在：字段改名或结构变化必须报错，
+	// 否则会被误判为“合法但无音色”而静默返回空列表。
+	var rawData struct {
+		UGCVoiceList json.RawMessage `json:"ugc_voice_list"`
+		HasMore      bool            `json:"has_more"`
+	}
+	if err := json.Unmarshal(payload.Data, &rawData); err != nil {
+		return nil, fmt.Errorf("解析豆包音色 data 字段失败: %w", err)
+	}
+	if len(rawData.UGCVoiceList) == 0 || string(rawData.UGCVoiceList) == "null" {
+		return nil, errors.New("豆包音色响应缺少 ugc_voice_list 字段")
+	}
+
+	result := &doubaoVoiceListResponse{
+		Code: payload.Code,
+		Msg:  payload.Msg,
+		Data: &doubaoVoiceListData{HasMore: rawData.HasMore},
+	}
+	if err := json.Unmarshal(rawData.UGCVoiceList, &result.Data.UGCVoiceList); err != nil {
+		return nil, fmt.Errorf("解析豆包音色列表失败: %w", err)
+	}
+
+	return result, nil
 }
 
 // isDoubaoVoiceListAuthError 判断列表响应是否表示登录态失效。

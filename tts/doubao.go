@@ -458,6 +458,10 @@ func doubaoStatusError(response pbResponse) error {
 }
 
 // doubaoAuthError 判断响应是否表示登录态失效。
+//
+// 已用无效 Cookie 直连真实服务核实：合成链路的失效响应固定为
+// status_code=40200001 status_text=session auth, userID or appID is empty。
+// 列表接口的 710012001 只出现在 HTTP 列表接口，不应在此判定。
 func doubaoAuthError(response pbResponse) error {
 	if response.StatusCode == DoubaoStatusCodeAuth ||
 		strings.Contains(strings.ToLower(response.StatusText), "session auth") {
