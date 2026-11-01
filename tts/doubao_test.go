@@ -186,17 +186,4 @@ func TestDoubaoAuthError(t *testing.T) {
 	}
 }
 
-// TestIsOggOutput 验证输出格式判断。
-func TestIsOggOutput(t *testing.T) {
-	cases := map[string]bool{
-		"/tmp/a.ogg":  true,
-		"/tmp/a.OPUS": true,
-		"/tmp/a.mp3":  false,
-		"/tmp/a":      false,
-	}
-	for path, want := range cases {
-		if got := isOggOutput(path); got != want {
-			t.Errorf("isOggOutput(%q) = %v, 期望 %v", path, got, want)
-		}
-	}
-}
+// TestIsOggOutput 已随 isOggOutput 移除（豆包不再按扩展名决定输出格式）。

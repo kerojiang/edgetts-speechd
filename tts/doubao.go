@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -62,17 +61,16 @@ func NewDoubao() *DoubaoTTS {
 // Ensure DoubaoTTS implements the Core interface
 var _ Core = (*DoubaoTTS)(nil)
 
-// GetAudioFile 合成音频并保存到默认路径。
+// GetAudioFile 合成音频并保存到默认路径（Ogg Opus）。
 func (d *DoubaoTTS) GetAudioFile(text string) (string, error) {
-	return d.GetAudioFileTo(text, DEFAULT_FILE)
+	return d.GetAudioFileTo(text, DOUBAO_DEFAULT_FILE)
 }
 
 // GetAudioFileTo 合成音频并保存到指定路径。
-// 目标为 .ogg/.opus 时直接写入原始数据，其余情况尝试转码为 MP3；
-// 转码不可用时保留 .ogg 原始文件并返回其路径。
+// 豆包只产出 Ogg Opus 原始字节，直接写入目标路径（由 Go 原生播放层解码，无需外部转码）。
 func (d *DoubaoTTS) GetAudioFileTo(text string, outputPath string) (string, error) {
 	if strings.TrimSpace(outputPath) == "" {
-		outputPath = DEFAULT_FILE
+		outputPath = DOUBAO_DEFAULT_FILE
 	}
 
 	audio, err := d.GetAudioBytes(text)
@@ -80,37 +78,9 @@ func (d *DoubaoTTS) GetAudioFileTo(text string, outputPath string) (string, erro
 		return "", err
 	}
 
-	if isOggOutput(outputPath) {
-		if err := writeAudioFile(outputPath, audio); err != nil {
-			return "", err
-		}
-		return outputPath, nil
+	if err := writeAudioFile(outputPath, audio); err != nil {
+		return "", err
 	}
-
-	tempFile, err := os.CreateTemp("", "edgetts-doubao-*.ogg")
-	if err != nil {
-		return "", fmt.Errorf("创建临时音频文件失败: %w", err)
-	}
-	tempPath := tempFile.Name()
-	defer os.Remove(tempPath)
-
-	if _, err := tempFile.Write(audio); err != nil {
-		tempFile.Close()
-		return "", fmt.Errorf("写入临时音频文件失败: %w", err)
-	}
-	if err := tempFile.Close(); err != nil {
-		return "", fmt.Errorf("关闭临时音频文件失败: %w", err)
-	}
-
-	if err := transcodeToMP3(tempPath, outputPath); err != nil {
-		fallback := replaceExt(outputPath, ".ogg")
-		if writeErr := writeAudioFile(fallback, audio); writeErr != nil {
-			return "", fmt.Errorf("转码失败（%v）且保存原始音频失败: %w", err, writeErr)
-		}
-		fmt.Fprintf(os.Stderr, "[WARN] MP3 转码失败（%v），已保留原始音频：%s\n", err, fallback)
-		return fallback, nil
-	}
-
 	return outputPath, nil
 }
 
@@ -471,16 +441,6 @@ func doubaoAuthError(response pbResponse) error {
 	return nil
 }
 
-// isOggOutput 判断输出路径是否要求原始 Ogg Opus。
-func isOggOutput(path string) bool {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".ogg", ".opus":
-		return true
-	default:
-		return false
-	}
-}
-
 // writeAudioFile 写入音频文件并创建上级目录。
 func writeAudioFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
@@ -495,36 +455,5 @@ func writeAudioFile(path string, data []byte) error {
 	return nil
 }
 
-// replaceExt 替换文件扩展名；没有扩展名时追加。
-func replaceExt(path, ext string) string {
-	oldExt := filepath.Ext(path)
-	if oldExt == "" {
-		return path + ext
-	}
-	return strings.TrimSuffix(path, oldExt) + ext
-}
-
-// transcodeToMP3 调用 ffmpeg 把 Ogg Opus 转成 MP3。
-func transcodeToMP3(source, target string) error {
-	ffmpegPath, err := exec.LookPath("ffmpeg")
-	if err != nil {
-		return errors.New("未找到 ffmpeg")
-	}
-
-	output, err := exec.Command(ffmpegPath,
-		"-y",
-		"-loglevel", "error",
-		"-i", source,
-		"-codec:a", "libmp3lame",
-		"-b:a", "48k",
-		target,
-	).CombinedOutput()
-	if err != nil {
-		detail := strings.TrimSpace(string(output))
-		if detail != "" {
-			return fmt.Errorf("ffmpeg 执行失败: %w: %s", err, detail)
-		}
-		return fmt.Errorf("ffmpeg 执行失败: %w", err)
-	}
-	return nil
-}
+// replaceExt 已随 ffmpeg 转码移除（豆包只产出 Ogg Opus，由 Go 原生播放层直接解码）。
+// transcodeToMP3 已随 ffmpeg 转码移除。

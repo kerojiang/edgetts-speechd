@@ -32,11 +32,13 @@ type Core interface {
 
 // Default constants
 var (
-	DEFAULT_FILE   = strings.Join([]string{os.TempDir(), "ttsfile.mp3"}, string(os.PathSeparator))
-	DEFAULT_VOICE  = "zh-CN-XiaoxiaoNeural"
-	DEFAULT_RATE   = "+0%"
-	DEFAULT_PITCH  = "+0Hz"
-	DEFAULT_VOLUME = "+0%"
+	DEFAULT_FILE = strings.Join([]string{os.TempDir(), "ttsfile.mp3"}, string(os.PathSeparator))
+	// DOUBAO_DEFAULT_FILE 是豆包默认输出文件：豆包只产出 Ogg Opus，播放层直接解码。
+	DOUBAO_DEFAULT_FILE = strings.Join([]string{os.TempDir(), "ttsfile.ogg"}, string(os.PathSeparator))
+	DEFAULT_VOICE       = "zh-CN-XiaoxiaoNeural"
+	DEFAULT_RATE        = "+0%"
+	DEFAULT_PITCH       = "+0Hz"
+	DEFAULT_VOLUME      = "+0%"
 )
 
 // Ensure EdgeTTS implements the Core interface

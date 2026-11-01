@@ -255,7 +255,6 @@ func main() {
 
 	switch strings.ToLower(strings.TrimSpace(*engine)) {
 	case "edge":
-		fmt.Fprintln(os.Stderr, "[INFO] 使用 Edge TTS 引擎")
 		edgeTTS := tts.NewEdge()
 
 		// 设置各种参数（如果提供了的话）
@@ -282,7 +281,6 @@ func main() {
 		ttsEngine = edgeTTS
 
 	case "doubao":
-		fmt.Fprintln(os.Stderr, "[INFO] 使用豆包 TTS 引擎")
 		doubaoTTS := tts.NewDoubao()
 
 		if *doubaoVoice != "" {
@@ -343,12 +341,10 @@ func main() {
 	if err != nil {
 		failf("生成音频文件失败：%v", err)
 	}
-	fmt.Printf("音频文件已生成：%s\n", audioFile)
 
-	// 播放音频文件
+	// 播放音频文件（Go 原生，不输出成功提示）
 	err = player.PlayFile(audioFile)
 	if err != nil {
 		failf("播放音频失败：%v", err)
 	}
-	fmt.Println("音频播放完成")
 }

@@ -4,69 +4,218 @@
  * 文件名称:audioPlayer.go
  * 修改日期:2024/05/24 17:12:37
  * 作者:kerojiang
+ *
+ * Go 原生音频播放：不再依赖 ffplay / ffmpeg / aplay 外部命令。
+ * - 播放后端：github.com/ebitengine/oto/v3（Linux 纯 Go，动态加载 ALSA / 连 PulseAudio）
+ * - MP3 解码：github.com/hajimehoshi/go-mp3（纯 Go，恒输出 16bit 双声道）
+ * - Ogg Opus 解码：github.com/pion/opus（纯 Go，含 Ogg 容器解析）
  */
 
 package player
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
-	"os/exec"
+	"sync"
+	"time"
+
+	"github.com/ebitengine/oto/v3"
+	"github.com/hajimehoshi/go-mp3"
+	"github.com/pion/opus"
+	"github.com/pion/opus/pkg/oggreader"
 )
 
-// PlayFile 播放音频文件（使用 ffmpeg 支持 MP3 和 AAC）
-func PlayFile(filePath string) error {
-	// 检查文件是否存在
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		return fmt.Errorf("文件不存在：%s", filePath)
+// audioFormat 识别出的音频容器格式。
+type audioFormat int
+
+const (
+	formatUnknown audioFormat = iota
+	formatMP3
+	formatOpus
+)
+
+// decodedAudio 解码后的 PCM 数据（16bit 小端交错）。
+type decodedAudio struct {
+	pcm        []byte
+	sampleRate int
+	channels   int
+}
+
+// detectFormat 按文件头魔数识别音频格式。
+func detectFormat(data []byte) audioFormat {
+	// MP3：ID3 标签头，或 0xFFEx 帧同步
+	if len(data) >= 3 && data[0] == 'I' && data[1] == 'D' && data[2] == '3' {
+		return formatMP3
 	}
+	if len(data) >= 2 && data[0] == 0xFF && data[1]&0xE0 == 0xE0 {
+		return formatMP3
+	}
+	// Ogg：本项目豆包引擎只产出 Opus 编码的 Ogg 容器
+	if len(data) >= 4 && bytes.Equal(data[0:4], []byte("OggS")) {
+		return formatOpus
+	}
+	return formatUnknown
+}
 
-	// 使用 ffplay 播放音频（支持 MP3、AAC 等多种格式）
-	// -nodisp: 不显示视频
-	// -autoexit: 播放完成后自动退出
-	// -loglevel quiet: 不显示日志信息
-	cmd := exec.Command("ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", filePath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+// decodeAudio 把音频字节解码为 PCM。
+func decodeAudio(data []byte) (*decodedAudio, error) {
+	switch detectFormat(data) {
+	case formatMP3:
+		return decodeMP3(data)
+	case formatOpus:
+		return decodeOpus(data)
+	default:
+		return nil, fmt.Errorf("无法识别的音频格式（仅支持 MP3 或 Ogg Opus）")
+	}
+}
 
-	if err := cmd.Run(); err != nil {
-		// 如果 ffplay 不可用，尝试使用 ffmpeg 播放到音频设备
-		cmd = exec.Command("ffmpeg", "-i", filePath, "-f", "alsa", "default", "-loglevel", "quiet")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		
-		if err := cmd.Run(); err != nil {
-			// 如果 ffmpeg 也不可用，尝试使用 aplay（仅支持 WAV/PCM）
-			cmd = exec.Command("aplay", filePath)
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("所有播放器都失败：%w", err)
+// decodeMP3 用 go-mp3 解码，输出恒为 16bit 双声道。
+func decodeMP3(data []byte) (*decodedAudio, error) {
+	dec, err := mp3.NewDecoder(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("MP3 解码器创建失败: %w", err)
+	}
+	var pcm []byte
+	buf := make([]byte, 8192)
+	for {
+		n, rerr := dec.Read(buf)
+		if n > 0 {
+			pcm = append(pcm, buf[:n]...)
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return nil, fmt.Errorf("MP3 解码失败: %w", rerr)
+		}
+	}
+	if len(pcm) == 0 {
+		return nil, fmt.Errorf("MP3 解码未产生音频数据")
+	}
+	return &decodedAudio{pcm: pcm, sampleRate: dec.SampleRate(), channels: 2}, nil
+}
+
+// decodeOpus 用 pion/opus 解码 Ogg Opus，输出 16bit 交错（单声道则上混为立体声）。
+func decodeOpus(data []byte) (*decodedAudio, error) {
+	or, header, err := oggreader.NewWith(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("Ogg 解析失败: %w", err)
+	}
+	sr := int(header.SampleRate)
+	ch := int(header.Channels)
+	dec, err := opus.NewDecoderWithOutput(sr, ch)
+	if err != nil {
+		return nil, fmt.Errorf("Opus 解码器创建失败: %w", err)
+	}
+	var pcm []byte
+	for {
+		packet, _, err := or.ParseNextPacket()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("Ogg 读取包失败: %w", err)
+		}
+		// 跳过 OpusHead / OpusTags 头包（非音频数据）
+		if bytes.HasPrefix(packet, []byte("OpusHead")) || bytes.HasPrefix(packet, []byte("OpusTags")) {
+			continue
+		}
+		buf := make([]int16, 5760*ch)
+		n, derr := dec.DecodeToInt16(packet, buf)
+		if derr != nil {
+			continue // 单个包解码失败则跳过（容错）
+		}
+		if ch == 1 {
+			// 单声道上混为立体声（左右复制），与 oto 默认双声道输出一致
+			for _, v := range buf[:n] {
+				pcm = append(pcm, byte(v), byte(v>>8), byte(v), byte(v>>8))
+			}
+		} else {
+			for _, v := range buf[:n] {
+				pcm = append(pcm, byte(v), byte(v>>8))
 			}
 		}
 	}
+	if len(pcm) == 0 {
+		return nil, fmt.Errorf("Opus 解码未产生音频数据")
+	}
+	return &decodedAudio{pcm: pcm, sampleRate: sr, channels: 2}, nil
+}
 
+// oto 进程内只允许一个 context（二次调用报 "context is already created"），
+// 故用包级单例复用。首次播放的采样率/声道固定，后续须一致。
+var (
+	audioCtxOnce sync.Once
+	audioCtx     *oto.Context
+	audioCtxErr  error
+	audioCtxSR   int
+	audioCtxCh   int
+)
+
+// ensureAudioContext 返回进程内唯一 oto context（懒初始化）。
+func ensureAudioContext(sr, ch int) (*oto.Context, error) {
+	audioCtxOnce.Do(func() {
+		audioCtxSR, audioCtxCh = sr, ch
+		op := &oto.NewContextOptions{
+			SampleRate:   sr,
+			ChannelCount: ch,
+			Format:       oto.FormatSignedInt16LE,
+		}
+		audioCtx, _, audioCtxErr = oto.NewContext(op)
+	})
+	if audioCtxErr != nil {
+		return nil, audioCtxErr
+	}
+	if audioCtxSR != sr || audioCtxCh != ch {
+		return nil, fmt.Errorf("音频设备采样率已固定为 %dHz/%dch（当前请求 %dHz/%dch），无法复用",
+			audioCtxSR, audioCtxCh, sr, ch)
+	}
+	return audioCtx, nil
+}
+
+// playPCM 用 oto 播放 PCM，阻塞直到播完（带超时保护）。
+func playPCM(dec *decodedAudio) error {
+	ctx, err := ensureAudioContext(dec.sampleRate, dec.channels)
+	if err != nil {
+		return fmt.Errorf("音频设备初始化失败: %w", err)
+	}
+	p := ctx.NewPlayer(bytes.NewReader(dec.pcm))
+	p.Play()
+
+	// 估算音频时长，作为超时上限（双倍 + 10s 保护，防止设备卡死）
+	estDur := time.Duration(float64(len(dec.pcm))/(float64(dec.sampleRate*dec.channels)*2)*1000) * time.Millisecond
+	deadline := time.Now().Add(estDur*2 + 10*time.Second)
+	for p.IsPlaying() {
+		if time.Now().After(deadline) {
+			p.Close()
+			return fmt.Errorf("播放超时（超过 %v）", estDur*2+10*time.Second)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err := p.Err(); err != nil {
+		p.Close()
+		return fmt.Errorf("播放失败: %w", err)
+	}
+	p.Close()
 	return nil
 }
 
-// PlayStream 播放音频数据流（写入临时文件后播放）
-func PlayStream(audioBytes []byte) error {
-	// 创建临时文件
-	tmpFile, err := os.CreateTemp("", "tts_audio_*.mp3")
+// PlayFile 播放音频文件（Go 原生，不依赖外部播放器）。
+func PlayFile(filePath string) error {
+	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return fmt.Errorf("创建临时文件失败：%w", err)
+		return fmt.Errorf("读取音频文件失败：%s: %w", filePath, err)
 	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
+	return PlayStream(data)
+}
 
-	// 写入音频数据
-	if _, err := tmpFile.Write(audioBytes); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("写入音频数据失败：%w", err)
+// PlayStream 播放音频数据流（MP3 或 Ogg Opus），阻塞直到播完。
+func PlayStream(audioBytes []byte) error {
+	dec, err := decodeAudio(audioBytes)
+	if err != nil {
+		return err
 	}
-	tmpFile.Close()
-
-	// 播放临时文件
-	return PlayFile(tmpPath)
+	return playPCM(dec)
 }

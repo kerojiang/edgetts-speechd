@@ -246,8 +246,8 @@ func TestDoubaoSynthesizeAuthError(t *testing.T) {
 	}
 }
 
-// TestDoubaoGetAudioFileToFallsBackToOgg 验证 ffmpeg 不可用时回退到 .ogg。
-func TestDoubaoGetAudioFileToFallsBackToOgg(t *testing.T) {
+// TestDoubaoGetAudioFileToWritesOgg 验证豆包直接写 Ogg Opus 原始字节到目标路径（无 ffmpeg 转码）。
+func TestDoubaoGetAudioFileToWritesOgg(t *testing.T) {
 	startFakeDoubao(t, func(conn *websocket.Conn) {
 		runFakeHandshake(t, conn)
 		readEvent(t, conn)
@@ -255,9 +255,6 @@ func TestDoubaoGetAudioFileToFallsBackToOgg(t *testing.T) {
 		sendResponse(t, conn, pbResponse{Event: "TTSResponse", StatusCode: 20000000, Data: []byte("OggS")})
 		sendResponse(t, conn, pbResponse{Event: "TTSEnded", StatusCode: 20000000})
 	})
-
-	// 把 PATH 置空，确保找不到 ffmpeg
-	t.Setenv("PATH", "/nonexistent")
 
 	dir := t.TempDir()
 	target := dir + "/output.mp3"
@@ -267,18 +264,19 @@ func TestDoubaoGetAudioFileToFallsBackToOgg(t *testing.T) {
 
 	got, err := engine.GetAudioFileTo("你好。", target)
 	if err != nil {
-		t.Fatalf("期望回退成功，实际错误: %v", err)
+		t.Fatalf("期望写入成功，实际错误: %v", err)
 	}
-	if got != dir+"/output.ogg" {
-		t.Fatalf("回退路径 = %q, 期望 %q", got, dir+"/output.ogg")
+	// 豆包只产出 Ogg Opus：即使目标扩展名是 .mp3，也直接写原始 Ogg 字节
+	if got != target {
+		t.Fatalf("返回路径 = %q, 期望 %q", got, target)
 	}
 
 	data, err := os.ReadFile(got)
 	if err != nil {
-		t.Fatalf("读取回退文件失败: %v", err)
+		t.Fatalf("读取文件失败: %v", err)
 	}
 	if string(data) != "OggS" {
-		t.Fatalf("回退文件内容 = %q, 期望 %q", string(data), "OggS")
+		t.Fatalf("文件内容 = %q, 期望 %q（Ogg Opus 原始字节）", string(data), "OggS")
 	}
 }
 
