@@ -1,6 +1,7 @@
 package tts
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // startFakeVoiceList 启动模拟音色列表服务，并把客户端地址指向该服务。
@@ -61,6 +63,11 @@ func TestSelectDoubaoTabs(t *testing.T) {
 	one, err := SelectDoubaoTabs("female")
 	if err != nil || len(one) != 1 || one[0].Key != "female" {
 		t.Fatalf("female 应返回单个分类，得到 %+v，err=%v", one, err)
+	}
+
+	upper, err := SelectDoubaoTabs("FEMALE")
+	if err != nil || len(upper) != 1 || upper[0].Key != "female" {
+		t.Fatalf("分类名应不区分大小写，得到 %+v，err=%v", upper, err)
 	}
 
 	if _, err := SelectDoubaoTabs("bogus"); err == nil {
@@ -140,6 +147,9 @@ func TestListDoubaoVoicesPaginationAndDedup(t *testing.T) {
 	}
 	if voices[0].StyleID != "zh_female_a_bigtts" || len(voices[0].Tabs) != 2 {
 		t.Errorf("第一条 = %+v, 期望跨分类合并分类", voices[0])
+	}
+	if got := strings.Join(voices[0].Tabs, ","); got != "rec,female" {
+		t.Errorf("分类合并 = %q, 期望 %q", got, "rec,female")
 	}
 	if voices[1].StyleID != "zh_male_b_bigtts" {
 		t.Errorf("第二条 = %+v, 期望 zh_male_b_bigtts", voices[1])
@@ -316,5 +326,120 @@ func TestListDoubaoVoicesWithCookieNonAuthError(t *testing.T) {
 	}
 	if extracted != 0 || call.Load() != 1 {
 		t.Errorf("非认证错误不应重试：extracted=%d call=%d", extracted, call.Load())
+	}
+}
+
+// TestListDoubaoVoicesHTTPAuthStatus 验证 HTTP 401/403 被标记为 ErrDoubaoAuth。
+func TestListDoubaoVoicesHTTPAuthStatus(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			startFakeVoiceList(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+			})
+
+			_, err := ListDoubaoVoices("sessionid=test", []DoubaoTab{{Key: "rec", RecommendType: 1}})
+			if !errors.Is(err, ErrDoubaoAuth) {
+				t.Fatalf("HTTP %d 期望 ErrDoubaoAuth，得到 %v", status, err)
+			}
+		})
+	}
+}
+
+// TestListDoubaoVoicesEmptyTabsFetchesAll 验证分类为空时请求全部 5 个分类。
+func TestListDoubaoVoicesEmptyTabsFetchesAll(t *testing.T) {
+	var mu sync.Mutex
+	seen := map[string]bool{}
+
+	startFakeVoiceList(t, func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			TabKey string `json:"tab_key"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		seen[body.TabKey] = true
+		mu.Unlock()
+
+		_, _ = w.Write([]byte(`{"code":0,"data":{"ugc_voice_list":[],"has_more":false}}`))
+	})
+
+	if _, err := ListDoubaoVoices("sessionid=test", nil); err != nil {
+		t.Fatalf("拉取失败: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, key := range []string{"", "female", "male", "characters", "accent"} {
+		if !seen[key] {
+			t.Errorf("未请求分类 %q，实际 %v", key, seen)
+		}
+	}
+}
+
+// TestListDoubaoVoicesTimeout 验证整体超时生效。
+func TestListDoubaoVoicesTimeout(t *testing.T) {
+	old := doubaoVoiceListTimeout
+	doubaoVoiceListTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { doubaoVoiceListTimeout = old })
+
+	startFakeVoiceList(t, func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(200 * time.Millisecond):
+		}
+	})
+
+	_, err := ListDoubaoVoices("sessionid=test", []DoubaoTab{{Key: "rec", RecommendType: 1}})
+	if err == nil {
+		t.Fatal("超时应返回错误")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("期望 DeadlineExceeded，得到 %v", err)
+	}
+}
+
+// TestListDoubaoVoicesWithCookieRetryNonAuthError 验证重试遇到非认证错误时原样返回。
+func TestListDoubaoVoicesWithCookieRetryNonAuthError(t *testing.T) {
+	useTempConfigDir(t)
+
+	var call atomic.Int64
+	startFakeVoiceList(t, func(w http.ResponseWriter, r *http.Request) {
+		if call.Add(1) == 1 {
+			_, _ = w.Write([]byte(`{"code":40200001,"msg":"session auth failed","data":{}}`))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	old := doubaoEdgeExtractor
+	doubaoEdgeExtractor = func() (string, error) { return "edge=1", nil }
+	t.Cleanup(func() { doubaoEdgeExtractor = old })
+
+	_, err := ListDoubaoVoicesWithCookie("bad=1", []DoubaoTab{{Key: "rec", RecommendType: 1}})
+	if err == nil {
+		t.Fatal("期望返回错误")
+	}
+	if strings.Contains(err.Error(), "登录态失效") {
+		t.Errorf("非认证错误不应报登录态失效: %v", err)
+	}
+}
+
+// TestListDoubaoVoicesWithCookieExtractFailureKeepsAuth 验证重取 Cookie 失败时仍可识别认证错误。
+func TestListDoubaoVoicesWithCookieExtractFailureKeepsAuth(t *testing.T) {
+	useTempConfigDir(t)
+
+	startFakeVoiceList(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":40200001,"msg":"session auth failed","data":{}}`))
+	})
+
+	old := doubaoEdgeExtractor
+	doubaoEdgeExtractor = func() (string, error) { return "", errors.New("浏览器不可用") }
+	t.Cleanup(func() { doubaoEdgeExtractor = old })
+
+	_, err := ListDoubaoVoicesWithCookie("bad=1", []DoubaoTab{{Key: "rec", RecommendType: 1}})
+	if !errors.Is(err, ErrDoubaoAuth) {
+		t.Fatalf("期望保留 ErrDoubaoAuth，得到 %v", err)
+	}
+	if !strings.Contains(err.Error(), "浏览器不可用") {
+		t.Errorf("应保留提取失败原因: %v", err)
 	}
 }

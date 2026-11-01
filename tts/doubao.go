@@ -107,7 +107,7 @@ func (d *DoubaoTTS) GetAudioFileTo(text string, outputPath string) (string, erro
 		if writeErr := writeAudioFile(fallback, audio); writeErr != nil {
 			return "", fmt.Errorf("转码失败（%v）且保存原始音频失败: %w", err, writeErr)
 		}
-		fmt.Printf("[WARN] MP3 转码失败（%v），已保留原始音频：%s\n", err, fallback)
+		fmt.Fprintf(os.Stderr, "[WARN] MP3 转码失败（%v），已保留原始音频：%s\n", err, fallback)
 		return fallback, nil
 	}
 
@@ -149,7 +149,7 @@ func (d *DoubaoTTS) synthesizeWithRetry(text string) ([]byte, error) {
 		cookie, err := d.attemptCookie(attempt)
 		if err != nil {
 			if lastErr != nil {
-				return nil, fmt.Errorf("豆包登录态失效且重新获取 Cookie 失败: %w（原始错误: %v）",
+				return nil, fmt.Errorf("豆包登录态失效且重新获取 Cookie 失败: %w（原始错误: %w）",
 					err, lastErr)
 			}
 			return nil, err

@@ -361,3 +361,32 @@ func TestNewEdgeWithConfigPropagates(t *testing.T) {
 		t.Fatalf("OriginalTexts = %d, Texts = %d", len(engine.OriginalTexts), len(engine.Texts))
 	}
 }
+
+// TestDoubaoSynthesizeExtractFailureKeepsAuth 验证重取 Cookie 失败时仍可识别认证错误。
+func TestDoubaoSynthesizeExtractFailureKeepsAuth(t *testing.T) {
+	useTempConfigDir(t)
+
+	startFakeDoubao(t, func(conn *websocket.Conn) {
+		readEvent(t, conn) // StartTask
+		sendResponse(t, conn, pbResponse{
+			Event:      "SessionFailed",
+			StatusCode: DoubaoStatusCodeAuth,
+			StatusText: "session auth, userID or appID is empty",
+		})
+	})
+
+	old := doubaoEdgeExtractor
+	doubaoEdgeExtractor = func() (string, error) { return "", errors.New("浏览器不可用") }
+	t.Cleanup(func() { doubaoEdgeExtractor = old })
+
+	engine := NewDoubao()
+	engine.Config.Cookie = "invalid=1"
+
+	_, err := engine.GetAudioBytes("你好。")
+	if !errors.Is(err, ErrDoubaoAuth) {
+		t.Fatalf("期望保留 ErrDoubaoAuth，得到 %v", err)
+	}
+	if !strings.Contains(err.Error(), "浏览器不可用") {
+		t.Errorf("应保留提取失败原因: %v", err)
+	}
+}

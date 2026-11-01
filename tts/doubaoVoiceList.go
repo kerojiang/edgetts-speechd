@@ -10,6 +10,7 @@ package tts
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,16 +28,19 @@ import (
 // 返回的 style_id 可直接作为 TTS 的 speaker 使用。
 
 const (
-	// DoubaoVoiceListEndpoint 是音色列表接口默认地址。
-	DoubaoVoiceListEndpoint = "https://www.doubao.com/alice/user_voice/recommend"
+	// doubaoVoiceListURL 是音色列表接口默认地址。
+	doubaoVoiceListURL = "https://www.doubao.com/alice/user_voice/recommend"
 	// doubaoVoicePageSize 是单页请求条数，与插件保持一致。
 	doubaoVoicePageSize = 30
 	// doubaoVoiceMaxPages 是单个分类的分页上限，防止 has_more 异常导致死循环。
-	doubaoVoiceMaxPages = 100
+	doubaoVoiceMaxPages = 20
 )
 
 // doubaoVoiceListEndpoint 是音色列表接口地址，测试中可替换。
-var doubaoVoiceListEndpoint = DoubaoVoiceListEndpoint
+var doubaoVoiceListEndpoint = doubaoVoiceListURL
+
+// doubaoVoiceListTimeout 是整次列表拉取的超时时间，测试中可替换。
+var doubaoVoiceListTimeout = 2 * time.Minute
 
 // DoubaoTab 描述音色列表的一个分类。
 type DoubaoTab struct {
@@ -81,7 +85,7 @@ func DoubaoTabs() []DoubaoTab {
 
 // SelectDoubaoTabs 按分类标识选择分类；key 为空时返回全部分类。
 func SelectDoubaoTabs(key string) ([]DoubaoTab, error) {
-	key = strings.TrimSpace(key)
+	key = strings.ToLower(strings.TrimSpace(key))
 	if key == "" {
 		return DoubaoTabs(), nil
 	}
@@ -103,6 +107,9 @@ func ListDoubaoVoices(cookie string, tabs []DoubaoTab) ([]DoubaoVoice, error) {
 
 	client := &http.Client{Timeout: 30 * time.Second}
 
+	ctx, cancel := context.WithTimeout(context.Background(), doubaoVoiceListTimeout)
+	defer cancel()
+
 	results := make([][]DoubaoVoice, len(tabs))
 	errs := make([]error, len(tabs))
 
@@ -112,7 +119,7 @@ func ListDoubaoVoices(cookie string, tabs []DoubaoTab) ([]DoubaoVoice, error) {
 		go func(index int, tab DoubaoTab) {
 			defer wg.Done()
 
-			voices, err := fetchDoubaoVoicesByTab(client, cookie, tab)
+			voices, err := fetchDoubaoVoicesByTab(ctx, client, cookie, tab)
 			if err != nil {
 				errs[index] = fmt.Errorf("分类 %s 拉取失败: %w", tab.Key, err)
 				return
@@ -152,11 +159,14 @@ func ListDoubaoVoicesWithCookie(explicitCookie string, tabs []DoubaoTab) ([]Doub
 
 	newCookie, err := extractAndSaveDoubaoCookie()
 	if err != nil {
-		return nil, fmt.Errorf("豆包登录态失效且重新获取 Cookie 失败: %w（原始错误: %v）", err, authErr)
+		return nil, fmt.Errorf("豆包登录态失效且重新获取 Cookie 失败: %w（原始错误: %w）", err, authErr)
 	}
 
 	voices, err = ListDoubaoVoices(newCookie, tabs)
 	if err != nil {
+		if !errors.Is(err, ErrDoubaoAuth) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("豆包登录态失效，请重新登录 Edge 中的豆包或设置 %s: %w", envDoubaoCookie, err)
 	}
 
@@ -164,7 +174,7 @@ func ListDoubaoVoicesWithCookie(explicitCookie string, tabs []DoubaoTab) ([]Doub
 }
 
 // fetchDoubaoVoicesByTab 翻完一个分类的全部分页，并过滤无效音色。
-func fetchDoubaoVoicesByTab(client *http.Client, cookie string, tab DoubaoTab) ([]DoubaoVoice, error) {
+func fetchDoubaoVoicesByTab(ctx context.Context, client *http.Client, cookie string, tab DoubaoTab) ([]DoubaoVoice, error) {
 	var voices []DoubaoVoice
 
 	for pageIndex := 1; ; pageIndex++ {
@@ -172,7 +182,7 @@ func fetchDoubaoVoicesByTab(client *http.Client, cookie string, tab DoubaoTab) (
 			return nil, fmt.Errorf("豆包音色分类 %s 分页超过上限", tab.Key)
 		}
 
-		response, err := fetchDoubaoVoicePage(client, cookie, tab, pageIndex)
+		response, err := fetchDoubaoVoicePage(ctx, client, cookie, tab, pageIndex)
 		if err != nil {
 			return nil, err
 		}
@@ -196,7 +206,7 @@ func fetchDoubaoVoicesByTab(client *http.Client, cookie string, tab DoubaoTab) (
 }
 
 // fetchDoubaoVoicePage 请求单页音色列表。
-func fetchDoubaoVoicePage(client *http.Client, cookie string, tab DoubaoTab, pageIndex int) (*doubaoVoiceListResponse, error) {
+func fetchDoubaoVoicePage(ctx context.Context, client *http.Client, cookie string, tab DoubaoTab, pageIndex int) (*doubaoVoiceListResponse, error) {
 	body := struct {
 		PageIndex     int    `json:"page_index"`
 		PageSize      int    `json:"page_size"`
@@ -227,7 +237,7 @@ func fetchDoubaoVoicePage(client *http.Client, cookie string, tab DoubaoTab, pag
 	query.Set("samantha_web", "1")
 	query.Set("language", "zh")
 
-	req, err := http.NewRequest(http.MethodPost, doubaoVoiceListEndpoint+"?"+query.Encode(), bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, doubaoVoiceListEndpoint+"?"+query.Encode(), bytes.NewReader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("构造豆包音色请求失败: %w", err)
 	}
