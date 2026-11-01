@@ -65,7 +65,8 @@ func ListDoubaoVoices(cookie string, tabs []DoubaoTab) ([]DoubaoVoice, error)
 - 每个分类一个 goroutine（`sync.WaitGroup`），分类内分页串行；结果按分类顺序归并，`style_id` 去重并合并 `Tabs`
 - `page_size=30`，`has_more=false` 或空列表停止；`page_index` 硬上限 100 防死循环
 - HTTP 客户端超时 30 秒；非 200 返回错误
-- `code != 0` 时：`code == 40200001`、`msg` 含 `session auth`、或 HTTP 401/403 → 返回 `ErrDoubaoAuth`；其余返回带 code/msg 的错误
+- `code != 0` 时：`code == 40200001`、`code == 710012001`、`msg` 含 `session auth` / `登录已过期` / `请重新登录` / `未登录`、或 HTTP 401/403 → 返回 `ErrDoubaoAuth`；其余返回带 code/msg 的错误
+  - 710012001 是音色列表接口实测的登录过期码（`msg=登录已过期，请重新登录`），与合成链路的 40200001 不同
 - 认证重试封装为 `listDoubaoVoicesWithRetry(cookie string, tabs []DoubaoTab)`：第一次用 `resolveDoubaoCookie`，失败且 `errors.Is(err, ErrDoubaoAuth)` 时 `clearDoubaoCookie()` + `extractAndSaveDoubaoCookie()` 后重试一次
 
 ### `main.go`

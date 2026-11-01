@@ -78,7 +78,7 @@ edgetts [选项] <文本>
 
 自动提取的做法：复制 Edge 的 `Local State` 与 `Default/Cookies` 到临时目录，启动 headless Edge 并通过 CDP 的 `Storage.getCookies` 读取 `doubao.com` 域的 Cookie。
 
-Cookie 失效时（服务端返回 `40200001` / `session auth`），程序会：
+Cookie 失效时（合成返回 `40200001` / `session auth`，音色列表返回 `710012001` / `登录已过期`），程序会：
 
 1. 删除本地缓存；
 2. 无论 Cookie 来自参数、环境变量还是缓存，都重新从 Edge 提取；
@@ -122,3 +122,9 @@ Edge TTS 通过 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量走代理；豆包 TTS 
 | `-doubao-cookie` | 空 | 直接指定豆包 Cookie |
 | `-doubao-refresh` | false | 强制重新从 Edge 提取豆包 Cookie |
 | `-h` / `--help` | false | 显示帮助 |
+
+## 输出与退出码
+
+- 音频路径、语音列表写到标准输出，便于管道处理（如 `awk '{print $1}'`）
+- `[INFO]` / `[WARN]` 与错误信息写到标准错误
+- 成功退出码为 `0`；参数错误、列表拉取失败、生成或播放失败时退出码为 `1`
