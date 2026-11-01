@@ -14,6 +14,9 @@ import (
 )
 
 // startFakeVoiceList 启动模拟音色列表服务，并把客户端地址指向该服务。
+//
+// 注意：这里替换的是包级变量，因此本文件中的测试都不能使用 t.Parallel()，
+// 否则会相互覆盖 doubaoVoiceListEndpoint / doubaoVoiceListTimeout。
 func startFakeVoiceList(t *testing.T, handler http.HandlerFunc) {
 	t.Helper()
 	server := httptest.NewServer(handler)
