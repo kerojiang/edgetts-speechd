@@ -62,7 +62,7 @@ type doubaoVoiceItem struct {
 type doubaoVoiceListResponse struct {
 	Code int    `json:"code"`
 	Msg  string `json:"msg"`
-	Data struct {
+	Data *struct {
 		UGCVoiceList []doubaoVoiceItem `json:"ugc_voice_list"`
 		HasMore      bool              `json:"has_more"`
 	} `json:"data"`
@@ -233,6 +233,7 @@ func fetchDoubaoVoicePage(client *http.Client, cookie string, tab DoubaoTab, pag
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Origin", DoubaoOrigin)
+	req.Header.Set("User-Agent", doubaoUserAgent)
 	req.Header.Set("Cookie", cookie)
 
 	resp, err := client.Do(req)
@@ -259,6 +260,9 @@ func fetchDoubaoVoicePage(client *http.Client, cookie string, tab DoubaoTab, pag
 	}
 	if result.Code != 0 {
 		return nil, fmt.Errorf("豆包音色接口错误: code=%d msg=%s", result.Code, result.Msg)
+	}
+	if result.Data == nil {
+		return nil, errors.New("豆包音色响应缺少 data 字段")
 	}
 
 	return &result, nil

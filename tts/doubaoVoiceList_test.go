@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -78,6 +79,9 @@ func TestListDoubaoVoicesPaginationAndDedup(t *testing.T) {
 		}
 		if r.Header.Get("Origin") != DoubaoOrigin {
 			t.Errorf("Origin = %q, 期望 %q", r.Header.Get("Origin"), DoubaoOrigin)
+		}
+		if r.Header.Get("User-Agent") != doubaoUserAgent {
+			t.Errorf("User-Agent = %q, 期望 %q", r.Header.Get("User-Agent"), doubaoUserAgent)
 		}
 
 		var body struct {
@@ -172,6 +176,18 @@ func TestListDoubaoVoicesErrors(t *testing.T) {
 				_, _ = w.Write([]byte(`not json`))
 			},
 		},
+		{
+			name: "空对象",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{}`))
+			},
+		},
+		{
+			name: "data为null",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"code":0,"data":null}`))
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -245,10 +261,9 @@ func TestListDoubaoVoicesPageLimit(t *testing.T) {
 func TestListDoubaoVoicesWithCookieRetry(t *testing.T) {
 	useTempConfigDir(t)
 
-	call := 0
+	var call atomic.Int64
 	startFakeVoiceList(t, func(w http.ResponseWriter, r *http.Request) {
-		call++
-		if call == 1 {
+		if call.Add(1) == 1 {
 			_, _ = w.Write([]byte(`{"code":40200001,"msg":"session auth failed","data":{}}`))
 			return
 		}
@@ -273,8 +288,8 @@ func TestListDoubaoVoicesWithCookieRetry(t *testing.T) {
 	if extracted != 1 {
 		t.Errorf("Edge 提取次数 = %d, 期望 1", extracted)
 	}
-	if call != 2 {
-		t.Errorf("接口调用次数 = %d, 期望 2", call)
+	if call.Load() != 2 {
+		t.Errorf("接口调用次数 = %d, 期望 2", call.Load())
 	}
 }
 
@@ -282,9 +297,9 @@ func TestListDoubaoVoicesWithCookieRetry(t *testing.T) {
 func TestListDoubaoVoicesWithCookieNonAuthError(t *testing.T) {
 	useTempConfigDir(t)
 
-	call := 0
+	var call atomic.Int64
 	startFakeVoiceList(t, func(w http.ResponseWriter, r *http.Request) {
-		call++
+		call.Add(1)
 		_, _ = w.Write([]byte(`{"code":123456,"msg":"参数错误","data":{}}`))
 	})
 
@@ -299,7 +314,7 @@ func TestListDoubaoVoicesWithCookieNonAuthError(t *testing.T) {
 	if _, err := ListDoubaoVoicesWithCookie("bad=1", []DoubaoTab{{Key: "rec", RecommendType: 1}}); err == nil {
 		t.Fatal("期望返回错误")
 	}
-	if extracted != 0 || call != 1 {
-		t.Errorf("非认证错误不应重试：extracted=%d call=%d", extracted, call)
+	if extracted != 0 || call.Load() != 1 {
+		t.Errorf("非认证错误不应重试：extracted=%d call=%d", extracted, call.Load())
 	}
 }
