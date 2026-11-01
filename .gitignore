@@ -11,6 +11,10 @@
 # Test binary, built with `go test -c`
 *.test.go
 *test*.go
+!*_test.go
+
+# 构建产物
+/edgetts
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
