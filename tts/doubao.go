@@ -9,6 +9,7 @@
 package tts
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -85,6 +86,7 @@ func (d *DoubaoTTS) GetAudioFileTo(text string, outputPath string) (string, erro
 }
 
 // GetAudioBytes 合成音频并返回原始 Ogg Opus 字节。
+// 多段文本并行合成（保序拼接），大幅缩短长文本首声等待。
 func (d *DoubaoTTS) GetAudioBytes(text string) ([]byte, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -96,15 +98,54 @@ func (d *DoubaoTTS) GetAudioBytes(text string) ([]byte, error) {
 		return nil, errors.New("待合成文本为空")
 	}
 
-	var audio []byte
-	for _, segment := range segments {
-		data, err := d.synthesizeWithRetry(segment)
-		if err != nil {
-			return nil, err
-		}
-		audio = append(audio, data...)
+	// 单段直接串行合成（无并行开销，且避免无意义 goroutine）
+	if len(segments) == 1 {
+		return d.synthesizeWithRetry(segments[0])
 	}
 
+	// 多段并行合成，按输入顺序保序拼接
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	results := make([][]byte, len(segments))
+	errs := make([]error, len(segments))
+	sem := make(chan struct{}, doubaoParallelLimit)
+
+	var wg sync.WaitGroup
+	for i, segment := range segments {
+		wg.Add(1)
+		go func(idx int, seg string) {
+			defer wg.Done()
+			// 若某段已失败，跳过尚未开始的分段
+			select {
+			case <-ctx.Done():
+				errs[idx] = ctx.Err()
+				return
+			case sem <- struct{}{}:
+			}
+			defer func() { <-sem }()
+
+			data, err := d.synthesizeWithRetry(seg)
+			if err != nil {
+				errs[idx] = err
+				cancel() // 失败则取消剩余排队
+				return
+			}
+			results[idx] = data
+		}(i, segment)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			return nil, fmt.Errorf("第 %d 段合成失败: %w", i+1, err)
+		}
+	}
+
+	var audio []byte
+	for _, r := range results {
+		audio = append(audio, r...)
+	}
 	if len(audio) == 0 {
 		return nil, errors.New("豆包未返回音频数据")
 	}
@@ -372,12 +413,12 @@ func randomHex(n int) (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-// splitDoubaoText 把文本切成不超过 doubaoMaxTextBytes 的片段。
+// splitDoubaoText 把文本切成不超过 doubaoParallelChunkBytes 的片段（并行合成粒度）。
 // 先按句子切分；对缺少标点的超长片段再按 UTF-8 字符边界硬切。
 func splitDoubaoText(text string) []string {
 	var segments []string
-	for _, segment := range SplitTextBySentencesWithMaxLength(text, doubaoMaxTextBytes) {
-		segments = append(segments, splitByRuneLimit(segment, doubaoMaxTextBytes)...)
+	for _, segment := range SplitTextBySentencesWithMaxLength(text, doubaoParallelChunkBytes) {
+		segments = append(segments, splitByRuneLimit(segment, doubaoParallelChunkBytes)...)
 	}
 	return segments
 }

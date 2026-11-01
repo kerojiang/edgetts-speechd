@@ -32,8 +32,17 @@ const (
 	DoubaoStatusCodeSuccess = 20000000
 	DoubaoStatusCodeAuth    = 40200001
 
-	// doubaoMaxTextBytes 是单次合成文本的字节上限。
+	// doubaoMaxTextBytes 是单次合成文本的字节上限（API 约束）。
 	doubaoMaxTextBytes = 4096
+
+	// doubaoParallelChunkBytes 是并行合成单段文本的字节上限（约 130 字）。
+	// 远小于 API 上限 4096，使长文本切成多段并行合成，大幅缩短首声等待：
+	// 串行合成耗时 ∝ 文本长度（1500 字约 29s），并行后 ≈ 单段时长（约 2-4s）。
+	doubaoParallelChunkBytes = 400
+
+	// doubaoParallelLimit 是并行合成最大并发连接数。
+	// 实测 8 并发无豆包限流，取 6 保守。
+	doubaoParallelLimit = 6
 )
 
 // DoubaoConfig 是豆包 TTS 的配置。
