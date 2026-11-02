@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"net/http"
@@ -24,6 +25,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
+
+	"edgetts-speechd/timing"
 )
 
 // EdgeTTS implements the COre interface for Edge TTS service
@@ -500,6 +503,68 @@ func relayEdgeStream(ctx context.Context, chunks <-chan *TTSChunk, errs <-chan e
 			return ctx.Err()
 		}
 	}
+}
+
+// forwardEdgeAudio 把 Edge 音频块按序写入 w；零音频或流错误时返回错误。
+func forwardEdgeAudio(ctx context.Context, chunks <-chan *TTSChunk, errs <-chan error, w io.Writer) error {
+	written := 0
+	for {
+		select {
+		case chunk, ok := <-chunks:
+			if !ok {
+				select {
+				case err := <-errs:
+					if err != nil {
+						return err
+					}
+				default:
+				}
+				if written == 0 {
+					return fmt.Errorf("Edge 未返回任何音频数据")
+				}
+				return nil
+			}
+			if chunk == nil || chunk.Type != "audio" || len(chunk.Data) == 0 {
+				continue
+			}
+			n, err := w.Write(chunk.Data)
+			if err != nil {
+				return fmt.Errorf("写入音频流失败: %w", err)
+			}
+			if written == 0 {
+				timing.Logf("tts: Edge 首个音频块（%d 字节）", n)
+			}
+			written += n
+		case err, ok := <-errs:
+			if !ok {
+				errs = nil // 正常关闭：继续读 chunks
+				continue
+			}
+			if err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// SynthesizeStream 流式合成 Edge 文本：把音频块直接写入 w。
+// 播放模式固定标准分段（ContinuousPlayback=false）：实测 true 对 >4096 字节
+// 文本只发第一段并报 websocket close 1007 SSML is invalid。
+func (e *EdgeTTS) SynthesizeStream(ctx context.Context, text string, w io.Writer) error {
+	if strings.TrimSpace(text) == "" {
+		return fmt.Errorf("待合成文本为空")
+	}
+	cfg := *e.Config
+	cfg.ContinuousPlayback = false
+	inst, err := newEdgeWithConfig(text, &cfg)
+	if err != nil {
+		return fmt.Errorf("构造 Edge 合成实例失败: %w", err)
+	}
+	timing.Logf("tts: Edge 切分为 %d 段", len(inst.Texts))
+	chunks, errs := inst.Stream(ctx)
+	return forwardEdgeAudio(ctx, chunks, errs, w)
 }
 
 // Helper methods for WebSocket communication
