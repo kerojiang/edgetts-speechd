@@ -232,6 +232,56 @@ func PlayStream(audioBytes []byte) error {
 	return playPCM(dec)
 }
 
+// pcmFirstReadLogger 包装解码器，在首次取到 PCM 时打点（首声时刻）。
+type pcmFirstReadLogger struct {
+	r     io.Reader
+	first bool
+}
+
+func (l *pcmFirstReadLogger) Read(p []byte) (int, error) {
+	n, err := l.r.Read(p)
+	if n > 0 && l.first {
+		l.first = false
+		timing.Logf("player: 首个 PCM 块被取走（首声时刻，%d 字节）", n)
+	}
+	return n, err
+}
+
+// PlayMP3Stream 流式解码并播放 MP3，阻塞到流结束或出错。
+// 数据未到达时 Read 阻塞（背压），不会提前返回。
+func PlayMP3Stream(r io.Reader) error {
+	timing.Logf("player: 等待 Edge 首个音频块")
+	dec, err := newMP3StreamDecoder(r)
+	if err != nil {
+		return err
+	}
+	// go-mp3 恒输出 16bit 双声道（v0.3.4 无 Channels 方法，见编译报错实测）
+	ctx, err := ensureAudioContext(dec.SampleRate(), 2)
+	if err != nil {
+		return fmt.Errorf("音频设备初始化失败: %w", err)
+	}
+	timing.Logf("player: MP3 解码器就绪 sr=%d ch=2", dec.SampleRate())
+	p := ctx.NewPlayer(&pcmFirstReadLogger{r: dec, first: true})
+	p.Play()
+	timing.Logf("player: 播放器已启动（首声应在此后立即出现）")
+
+	// 流式时长未知：用较大超时兜底（长文本可达数分钟），防设备卡死。
+	deadline := time.Now().Add(30 * time.Minute)
+	for p.IsPlaying() {
+		if time.Now().After(deadline) {
+			p.Close()
+			return fmt.Errorf("播放超时（超过 30 分钟）")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err := p.Err(); err != nil {
+		p.Close()
+		return fmt.Errorf("播放失败: %w", err)
+	}
+	p.Close()
+	return nil
+}
+
 // pcmChunkReader 从 channel 逐段读取 Ogg Opus 字节，解码为 PCM 流供 oto 播放。
 // 每段是独立 Ogg Opus 流（含 OpusHead），decodeOpus 会跳过头包。
 type pcmChunkReader struct {
