@@ -19,6 +19,7 @@ import (
 	"unicode"
 
 	"edgetts-speechd/player"
+	"edgetts-speechd/timing"
 	"edgetts-speechd/tts"
 )
 
@@ -199,6 +200,7 @@ func printHelp() {
 }
 
 func main() {
+	timing.Logf("main: 进程进入 main")
 	// 定义命令行参数
 	engine := flag.String("engine", "edge", "选择 TTS 引擎：edge 或 doubao")
 	voice := flag.String("v", "", "指定语音 (Edge TTS)")
@@ -222,6 +224,7 @@ func main() {
 
 	// 解析参数
 	flag.Parse()
+	timing.Logf("main: 参数解析完成")
 
 	// 处理帮助
 	if *showHelp || *showHelpLong {
@@ -360,6 +363,7 @@ func main() {
 // streamPlayDoubao 流式播放豆包 TTS：并行合成段（首段完成即送入 channel），
 // player 逐段解码播放。首声 ≈ 第一段合成时间（约 1-2s），解决长文本首声等待。
 func streamPlayDoubao(dt *tts.DoubaoTTS, text string) error {
+	timing.Logf("main: 启动流式合成（文本 %d 字节）", len(text))
 	chunks := make(chan []byte, 8)
 	synthErr := make(chan error, 1)
 	go func() {

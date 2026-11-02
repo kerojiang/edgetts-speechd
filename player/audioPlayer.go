@@ -25,6 +25,8 @@ import (
 	"github.com/hajimehoshi/go-mp3"
 	"github.com/pion/opus"
 	"github.com/pion/opus/pkg/oggreader"
+
+	"edgetts-speechd/timing"
 )
 
 // audioFormat 识别出的音频容器格式。
@@ -225,6 +227,7 @@ func PlayStream(audioBytes []byte) error {
 type pcmChunkReader struct {
 	chunks  <-chan []byte
 	current []byte
+	first   bool // 首次 Read 时打点，标记首声时刻
 }
 
 // Read 实现 io.Reader：从 channel 取段解码，持续提供 PCM 字节；channel 关闭后返回 io.EOF。
@@ -242,6 +245,10 @@ func (r *pcmChunkReader) Read(p []byte) (int, error) {
 	}
 	n := copy(p, r.current)
 	r.current = r.current[n:]
+	if r.first && n > 0 {
+		r.first = false
+		timing.Logf("player: 首个 PCM 块被取走（首声时刻，%d 字节）", n)
+	}
 	return n, nil
 }
 
@@ -249,10 +256,12 @@ func (r *pcmChunkReader) Read(p []byte) (int, error) {
 // 阻塞直到所有段播完；channel 关闭即结束（合成方负责 close）。
 // 首声 ≈ 第一段合成完成（合成方并行合成，首段完成立即送入 channel）。
 func PlayOggChunks(chunks <-chan []byte) error {
+	timing.Logf("player: 等待首段音频")
 	first, ok := <-chunks
 	if !ok {
 		return fmt.Errorf("无音频数据（合成方未产生任何段）")
 	}
+	timing.Logf("player: 收到首段（%d 字节），开始解码", len(first))
 	dec, err := decodeOpus(first)
 	if err != nil {
 		return fmt.Errorf("解码首段失败: %w", err)
@@ -261,9 +270,11 @@ func PlayOggChunks(chunks <-chan []byte) error {
 	if err != nil {
 		return fmt.Errorf("音频设备初始化失败: %w", err)
 	}
-	r := &pcmChunkReader{chunks: chunks, current: dec.pcm}
+	timing.Logf("player: 首段解码完成 sr=%d ch=%d pcm=%d 字节", dec.sampleRate, dec.channels, len(dec.pcm))
+	r := &pcmChunkReader{chunks: chunks, current: dec.pcm, first: true}
 	p := ctx.NewPlayer(r)
 	p.Play()
+	timing.Logf("player: 播放器已启动（首声应在此后立即出现）")
 
 	// 流式时长未知：用较大超时兜底（长文本音频可达数分钟），防设备卡死。
 	deadline := time.Now().Add(30 * time.Minute)

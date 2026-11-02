@@ -24,6 +24,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"edgetts-speechd/timing"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -99,6 +101,7 @@ func (d *DoubaoTTS) SynthesizeStream(text string, out chan<- []byte) error {
 	if len(segments) == 0 {
 		return errors.New("待合成文本为空")
 	}
+	timing.Logf("tts: 切分为 %d 段", len(segments))
 
 	// 每段一个缓冲 channel，并行合成
 	segChans := make([]chan []byte, len(segments))
@@ -128,6 +131,7 @@ func (d *DoubaoTTS) SynthesizeStream(text string, out chan<- []byte) error {
 				close(segChans[idx])
 				return
 			}
+			timing.Logf("tts: 第 %d 段合成完成（%d 字节）", idx+1, len(data))
 			segChans[idx] <- data
 		}(i, segment)
 	}
