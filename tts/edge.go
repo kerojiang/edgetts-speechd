@@ -445,69 +445,61 @@ func (e *EdgeTTS) Stream(ctx context.Context) (<-chan *TTSChunk, <-chan error) {
 
 		if e.Config.ContinuousPlayback {
 			// Continuous playback mode: send all text as one request
-			if len(e.OriginalTexts) > 0 {
-				// Use the first text segment as PartialText for compatibility
-				e.State.PartialText = e.OriginalTexts[0]
-
-				streamChan, streamErrChan := e.streamSingle(ctx)
-
-			streamLoop:
-				for {
-					select {
-					case chunk, ok := <-streamChan:
-						if !ok {
-							break streamLoop
-						}
-						select {
-						case chunkChan <- chunk:
-						case <-ctx.Done():
-							errChan <- ctx.Err()
-							return
-						}
-					case err := <-streamErrChan:
-						errChan <- err
-						return
-					case <-ctx.Done():
-						errChan <- ctx.Err()
-						return
-					}
-				}
-			} else {
+			if len(e.OriginalTexts) == 0 {
 				errChan <- fmt.Errorf("no text segments available for continuous playback")
+				return
+			}
+			// Use the first text segment as PartialText for compatibility
+			e.State.PartialText = e.OriginalTexts[0]
+
+			chunks, errs := e.streamSingle(ctx)
+			if err := relayEdgeStream(ctx, chunks, errs, chunkChan); err != nil {
+				errChan <- err
 			}
 		} else {
 			// Standard mode: process each text segment separately
 			for _, partialText := range e.Texts {
 				e.State.PartialText = partialText
 
-				streamChan, streamErrChan := e.streamSingle(ctx)
-
-			streamLoopStandard:
-				for {
-					select {
-					case chunk, ok := <-streamChan:
-						if !ok {
-							break streamLoopStandard
-						}
-						select {
-						case chunkChan <- chunk:
-						case <-ctx.Done():
-							errChan <- ctx.Err()
-							return
-						}
-					case err := <-streamErrChan:
-						errChan <- err
-						return
-					case <-ctx.Done():
-						errChan <- ctx.Err()
-						return
-					}
+				chunks, errs := e.streamSingle(ctx)
+				if err := relayEdgeStream(ctx, chunks, errs, chunkChan); err != nil {
+					errChan <- err
+					return
 				}
 			}
 		}
 	}()
 
 	return chunkChan, errChan
+}
+
+// relayEdgeStream 把单个 streamSingle 的 chunk/err 转发到 out。
+// 关键：errChan 正常关闭（无错误）时必须置 nil 并继续读 chunkChan，
+// 否则会在多段合成时提前返回、静默丢弃后续段（历史 bug）。
+func relayEdgeStream(ctx context.Context, chunks <-chan *TTSChunk, errs <-chan error, out chan<- *TTSChunk) error {
+	for {
+		select {
+		case chunk, ok := <-chunks:
+			if !ok {
+				return nil
+			}
+			select {
+			case out <- chunk:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		case err, ok := <-errs:
+			if !ok {
+				errs = nil // 正常结束：不再监听，继续读直到 chunks 关闭
+				continue
+			}
+			if err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // Helper methods for WebSocket communication
