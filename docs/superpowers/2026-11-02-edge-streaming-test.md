@@ -142,7 +142,8 @@ go test -tags integration ./player/ -count=1 -run TestPlayMP3Stream -v
 
 1. 首声数据来自本机同一网络环境，未覆盖跨地域/弱网。
 2. 多段完整播放只测了 2 段（4201 字节）；更多段数未逐档测试（多段逻辑与段数无关）。
-3. `-o` 多段场景仍受旧默认 `--continuous` 影响（本次未改变 `-o` 行为），可用 `--no-continuous` 规避。
+3. `-o` 多段场景仍受默认 `--continuous` 影响（未改变 `-o` 行为），可用 `--no-continuous` 规避；帮助文案已明确标注该参数仅对 Edge 的 `-o` 模式生效。
+4. 首声口径：日志中的「首个 PCM 块被取走」是播放器首次从解码器取到 PCM 的时刻，实际扬声器出声还会再晚一个设备缓冲（通常几十毫秒），因此记录值偏保守。
 
 ## 最终审查后的修复与复测（同日）
 
@@ -172,3 +173,13 @@ go test -tags integration ./player/ -count=1 -run TestPlayMP3Stream -v
 - 多段文本（默认 `--continuous`）：exit=1，报 `websocket: close 1007 ... SSML is invalid`，且目标文件原内容 `ORIGINAL` 保持不变（旧实现会被截断为 0 字节）。
 
 测试：`go build ./...`、`go vet ./...`、`go test ./...`、`go test -tags integration ./player/`、`EDGETTS_NET_TEST=1 go test ./tts/ -run "TestEdgeMultiSegmentReal|TestEdgeSynthesizeStreamMultiSegmentReal|TestSynthesizeStreamFirstSegmentAlone"` 全部通过。
+
+## 遗留项处理（同日）
+
+| 遗留项 | 处理 |
+|---|---|
+| 帮助文案称 `--continuous` 对 Edge 播放有效 | 改为「仅 Edge 的 `-o` 模式生效：单次请求合成全部文本（>4096 字节会失败）」，`--no-continuous` 标注「播放模式始终分段」；flag 描述同步 |
+| `PlayOggChunks` 的 `p.Close()` 是空操作 | 抽取 `waitForPlayer`，超时/错误统一用 `PauseAndStopReading()`；`playPCM`、`PlayMP3Stream`、`PlayOggChunks` 共用 |
+| `relayEdgeStream` 取消时的 goroutine 风险 | 核实无 send-on-closed 路径；真正问题是 `handleTextMessage` 对 metadata 块做无缓冲裸发送，取消后永久阻塞、`defer wsConn.Close()` 不执行。改为 `select` 响应 ctx，并加 `TestHandleTextMessageRespectsCancel` |
+| 首声测量口径不清 | 在 `pcmFirstReadLogger` 增加口径注释（解码就绪 vs 物理出声） |
+| 重复的播放等待逻辑 | 合并为 `waitForPlayer`（三处共用） |

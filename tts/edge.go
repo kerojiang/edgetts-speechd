@@ -659,7 +659,7 @@ func (e *EdgeTTS) streamSingle(ctx context.Context) (<-chan *TTSChunk, <-chan er
 
 				switch messageType {
 				case websocket.TextMessage:
-					if err := e.handleTextMessage(data, chunkChan, &audioWasReceived); err != nil {
+					if err := e.handleTextMessage(ctx, data, chunkChan, &audioWasReceived); err != nil {
 						if err == errStreamComplete {
 							// 正常完成，不向 errChan 发送错误
 							return
@@ -693,7 +693,7 @@ func (e *EdgeTTS) streamSingle(ctx context.Context) (<-chan *TTSChunk, <-chan er
 // Error to signal stream completion
 var errStreamComplete = fmt.Errorf("stream completed")
 
-func (e *EdgeTTS) handleTextMessage(data []byte, chunkChan chan<- *TTSChunk, audioWasReceived *bool) error {
+func (e *EdgeTTS) handleTextMessage(ctx context.Context, data []byte, chunkChan chan<- *TTSChunk, audioWasReceived *bool) error {
 	parameters, msgData := getHeadersAndData(data, bytes.Index(data, []byte("\r\n\r\n")))
 
 	path, exists := parameters["Path"]
@@ -709,7 +709,13 @@ func (e *EdgeTTS) handleTextMessage(data []byte, chunkChan chan<- *TTSChunk, aud
 		if err != nil {
 			return fmt.Errorf("failed to parse metadata: %w", err)
 		}
-		chunkChan <- chunk
+		// 必须响应 ctx：调用方（relayEdgeStream）可能已因取消/播放结束而停止读取，
+		// 无缓冲的裸发送会让本 goroutine 永久阻塞，defer wsConn.Close() 也无法执行。
+		select {
+		case chunkChan <- chunk:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 
 		// Update state
 		e.State.LastDurationOffset = chunk.Offset + chunk.Duration

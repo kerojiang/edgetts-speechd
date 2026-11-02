@@ -215,6 +215,25 @@ func waitAudioContextReady() error {
 	}
 }
 
+// waitForPlayer 等待播放结束；超时或播放出错时停止读取并返回错误。
+// oto v3.5.1 的 Player.Close 是空操作（player.go:113-116），
+// 必须用 PauseAndStopReading 才能真正停止读取与出声。
+func waitForPlayer(p *oto.Player, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for p.IsPlaying() {
+		if time.Now().After(deadline) {
+			p.PauseAndStopReading()
+			return fmt.Errorf("播放超时（超过 %v）", timeout)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err := p.Err(); err != nil {
+		p.PauseAndStopReading()
+		return fmt.Errorf("播放失败: %w", err)
+	}
+	return nil
+}
+
 // playPCM 用 oto 播放 PCM，阻塞直到播完（带超时保护）。
 func playPCM(dec *decodedAudio) error {
 	ctx, err := ensureAudioContext(dec.sampleRate, dec.channels)
@@ -226,20 +245,7 @@ func playPCM(dec *decodedAudio) error {
 
 	// 估算音频时长，作为超时上限（双倍 + 10s 保护，防止设备卡死）
 	estDur := time.Duration(float64(len(dec.pcm))/(float64(dec.sampleRate*dec.channels)*2)*1000) * time.Millisecond
-	deadline := time.Now().Add(estDur*2 + 10*time.Second)
-	for p.IsPlaying() {
-		if time.Now().After(deadline) {
-			p.Close()
-			return fmt.Errorf("播放超时（超过 %v）", estDur*2+10*time.Second)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if err := p.Err(); err != nil {
-		p.PauseAndStopReading()
-		return fmt.Errorf("播放失败: %w", err)
-	}
-	p.Close()
-	return nil
+	return waitForPlayer(p, estDur*2+10*time.Second)
 }
 
 // PlayFile 播放音频文件（Go 原生，不依赖外部播放器）。
@@ -270,6 +276,8 @@ func (l *pcmFirstReadLogger) Read(p []byte) (int, error) {
 	n, err := l.r.Read(p)
 	if n > 0 && l.first {
 		l.first = false
+		// 口径说明：这里记录的是播放器首次从解码器取走 PCM（解码就绪），
+		// 实际扬声器出声还会再晚一个设备缓冲（通常几十毫秒），日志值偏保守。
 		timing.Logf("player: 首个 PCM 块被取走（首声时刻，%d 字节）", n)
 	}
 	return n, err
@@ -366,18 +374,5 @@ func PlayOggChunks(chunks <-chan []byte) error {
 	timing.Logf("player: 播放器已启动（首声应在此后立即出现）")
 
 	// 流式时长未知：用较大超时兜底（长文本音频可达数分钟），防设备卡死。
-	deadline := time.Now().Add(30 * time.Minute)
-	for p.IsPlaying() {
-		if time.Now().After(deadline) {
-			p.Close()
-			return fmt.Errorf("播放超时（超过 30 分钟）")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if err := p.Err(); err != nil {
-		p.Close()
-		return fmt.Errorf("播放失败: %w", err)
-	}
-	p.Close()
-	return nil
+	return waitForPlayer(p, 30*time.Minute)
 }
