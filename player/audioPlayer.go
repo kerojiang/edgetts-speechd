@@ -99,6 +99,16 @@ func decodeMP3(data []byte) (*decodedAudio, error) {
 	return &decodedAudio{pcm: pcm, sampleRate: dec.SampleRate(), channels: 2}, nil
 }
 
+// newMP3StreamDecoder 用 go-mp3 创建流式解码器：只读取帧头即返回，
+// 后续 Read 持续从 r 拉取（r 可为 io.Pipe 读端，无数据时自然阻塞形成背压）。
+func newMP3StreamDecoder(r io.Reader) (*mp3.Decoder, error) {
+	dec, err := mp3.NewDecoder(r)
+	if err != nil {
+		return nil, fmt.Errorf("MP3 流式解码器创建失败: %w", err)
+	}
+	return dec, nil
+}
+
 // decodeOpus 用 pion/opus 解码 Ogg Opus，输出 16bit 交错（单声道则上混为立体声）。
 func decodeOpus(data []byte) (*decodedAudio, error) {
 	or, header, err := oggreader.NewWith(bytes.NewReader(data))
