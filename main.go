@@ -9,6 +9,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -339,9 +340,15 @@ func main() {
 		return
 	}
 
-	// 播放模式：豆包用流式（边合成边播，首声≈首段合成时间），Edge 用整段文件
-	if dt, ok := ttsEngine.(*tts.DoubaoTTS); ok {
-		if err := streamPlayDoubao(dt, text); err != nil {
+	// 播放模式：豆包与 Edge 都走流式（边合成边播）
+	switch e := ttsEngine.(type) {
+	case *tts.DoubaoTTS:
+		if err := streamPlayDoubao(e, text); err != nil {
+			failf("播放失败：%v", err)
+		}
+		return
+	case *tts.EdgeTTS:
+		if err := streamPlayEdge(e, text); err != nil {
 			failf("播放失败：%v", err)
 		}
 		return
@@ -382,4 +389,36 @@ func streamPlayDoubao(dt *tts.DoubaoTTS, text string) error {
 	default:
 		return nil
 	}
+}
+
+// streamPlayEdge 流式播放 Edge TTS：合成方把音频块写入 pipe，播放方边读边解码。
+// 合成出错时用 CloseWithError 让播放端立刻收到错误，避免永久阻塞。
+func streamPlayEdge(et *tts.EdgeTTS, text string) error {
+	timing.Logf("main: Edge 流式合成（文本 %d 字节）", len(text))
+	pr, pw := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	synthErr := make(chan error, 1)
+	go func() {
+		err := et.SynthesizeStream(ctx, text, pw)
+		if err != nil {
+			_ = pw.CloseWithError(err)
+		} else {
+			_ = pw.Close()
+		}
+		synthErr <- err
+	}()
+
+	playErr := player.PlayMP3Stream(pr)
+	cancel()
+	_ = pr.CloseWithError(playErr) // 播放提前结束时解除合成方 Write 阻塞
+	sErr := <-synthErr
+	if playErr != nil {
+		if sErr != nil {
+			return sErr
+		}
+		return playErr
+	}
+	return sErr
 }
