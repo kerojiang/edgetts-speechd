@@ -159,12 +159,16 @@ func decodeOpus(data []byte) (*decodedAudio, error) {
 // oto 进程内只允许一个 context（二次调用报 "context is already created"），
 // 故用包级单例复用。首次播放的采样率/声道固定，后续须一致。
 var (
-	audioCtxOnce sync.Once
-	audioCtx     *oto.Context
-	audioCtxErr  error
-	audioCtxSR   int
-	audioCtxCh   int
+	audioCtxOnce  sync.Once
+	audioCtx      *oto.Context
+	audioCtxReady chan struct{}
+	audioCtxErr   error
+	audioCtxSR    int
+	audioCtxCh    int
 )
+
+// audioContextReadyTimeout 是等待 oto 设备初始化的上限。
+const audioContextReadyTimeout = 10 * time.Second
 
 // ensureAudioContext 返回进程内唯一 oto context（懒初始化）。
 func ensureAudioContext(sr, ch int) (*oto.Context, error) {
@@ -175,16 +179,40 @@ func ensureAudioContext(sr, ch int) (*oto.Context, error) {
 			ChannelCount: ch,
 			Format:       oto.FormatSignedInt16LE,
 		}
-		audioCtx, _, audioCtxErr = oto.NewContext(op)
+		audioCtx, audioCtxReady, audioCtxErr = oto.NewContext(op)
 	})
 	if audioCtxErr != nil {
 		return nil, audioCtxErr
+	}
+	// oto 的设备初始化是异步的：NewContext 只返回 ready 通道（见 oto v3.5.1
+	// driver_unix.go 的 newContext），必须等它关闭后再用 Err() 判断设备是否真的可用；
+	// 否则会拿到一个永远不出声的 context，播放被静默吞掉。
+	if err := waitAudioContextReady(); err != nil {
+		return nil, err
 	}
 	if audioCtxSR != sr || audioCtxCh != ch {
 		return nil, fmt.Errorf("音频设备采样率已固定为 %dHz/%dch（当前请求 %dHz/%dch），无法复用",
 			audioCtxSR, audioCtxCh, sr, ch)
 	}
 	return audioCtx, nil
+}
+
+// waitAudioContextReady 等待 oto context 完成设备初始化，并检查初始化错误。
+func waitAudioContextReady() error {
+	if audioCtxReady == nil {
+		return nil
+	}
+	timer := time.NewTimer(audioContextReadyTimeout)
+	defer timer.Stop()
+	select {
+	case <-audioCtxReady:
+		if err := audioCtx.Err(); err != nil {
+			return fmt.Errorf("音频设备不可用: %w", err)
+		}
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("音频设备初始化超时（%v）", audioContextReadyTimeout)
+	}
 }
 
 // playPCM 用 oto 播放 PCM，阻塞直到播完（带超时保护）。
@@ -207,7 +235,7 @@ func playPCM(dec *decodedAudio) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if err := p.Err(); err != nil {
-		p.Close()
+		p.PauseAndStopReading()
 		return fmt.Errorf("播放失败: %w", err)
 	}
 	p.Close()
@@ -269,7 +297,8 @@ func PlayMP3Stream(r io.Reader) error {
 	deadline := time.Now().Add(30 * time.Minute)
 	for p.IsPlaying() {
 		if time.Now().After(deadline) {
-			p.Close()
+			// oto v3.5.1 的 Player.Close 是空操作，必须显式停止读取。
+			p.PauseAndStopReading()
 			return fmt.Errorf("播放超时（超过 30 分钟）")
 		}
 		time.Sleep(50 * time.Millisecond)

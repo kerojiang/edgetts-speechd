@@ -13,12 +13,14 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -271,161 +273,86 @@ func newEdgeWithConfig(text string, base *TTSConfig) (*EdgeTTS, error) {
 	}, nil
 }
 
+// synthesizeTo 把 text 的合成结果写入 w，使用给定配置（newEdgeWithConfig 会复制，不会修改 cfg）。
+// 所有取音频的入口（写文件 / 取字节 / 流式播放）都走这里，
+// 以保证错误优先透出、零音频必定报错。
+func synthesizeTo(ctx context.Context, text string, cfg *TTSConfig, w io.Writer) error {
+	if strings.TrimSpace(text) == "" {
+		return fmt.Errorf("待合成文本为空")
+	}
+	inst, err := newEdgeWithConfig(text, cfg)
+	if err != nil {
+		return fmt.Errorf("构造 Edge 合成实例失败: %w", err)
+	}
+	chunks, errs := inst.Stream(ctx)
+	return forwardEdgeAudio(ctx, chunks, errs, w)
+}
+
 // GetAudioFile implements the COre interface method
 func (e *EdgeTTS) GetAudioFile(text string) (string, error) {
-	// Use default file path if not specified
-	filename := DEFAULT_FILE
-	// Using filename and text parameter
-
-	ctx := context.Background()
-
-	// Create audio file
-	audioFile, err := os.Create(filename)
-	if err != nil {
-		return "", fmt.Errorf("failed to create audio file: %w", err)
-	}
-	defer audioFile.Close()
-
-	// Create new instance with the provided text
-	tts, err := newEdgeWithConfig(text, e.Config)
-	if err != nil {
-		return "", fmt.Errorf("failed to create TTS instance: %w", err)
-	}
-
-	// Stream and write to file
-	chunkChan, errChan := tts.Stream(ctx)
-
-	totalBytes := 0
-
-	for {
-		select {
-		case chunk, ok := <-chunkChan:
-			if !ok {
-				// Stream completed
-				// About to return filename
-				return filename, nil
-			}
-
-			if chunk.Type == "audio" {
-				n, err := audioFile.Write(chunk.Data)
-				if err != nil {
-					return "", fmt.Errorf("failed to write audio data: %w", err)
-				}
-				totalBytes += n
-				// Audio chunk written
-			}
-		case err, ok := <-errChan:
-			// Check if channel is closed without error (normal completion)
-			if !ok {
-				return filename, nil
-			}
-			// Check if it's a nil error (which might indicate normal completion)
-			if err == nil {
-				return filename, nil
-			}
-			// Check if it's the stream completion signal
-			if err == errStreamComplete {
-				return filename, nil
-			}
-			return "", err
-		case <-ctx.Done():
-			// Context done
-			return "", ctx.Err()
-		}
-	}
+	return e.GetAudioFileTo(text, DEFAULT_FILE)
 }
 
 // GetAudioFileTo implements the COre interface method - saves to specified path
+// 采用同目录临时文件 + 成功后 rename：合成失败时不会留下 0 字节文件，也不会破坏已有文件。
 func (e *EdgeTTS) GetAudioFileTo(text string, outputPath string) (string, error) {
-	// Use provided output path
-	filename := outputPath
-
-	ctx := context.Background()
-
-	// Create audio file
-	audioFile, err := os.Create(filename)
-	if err != nil {
-		return "", fmt.Errorf("failed to create audio file: %w", err)
+	if err := writeFileAtomic(outputPath, func(w io.Writer) error {
+		return synthesizeTo(context.Background(), text, e.Config, w)
+	}); err != nil {
+		return "", err
 	}
-	defer audioFile.Close()
-
-	// Create new instance with the provided text
-	tts, err := newEdgeWithConfig(text, e.Config)
-	if err != nil {
-		return "", fmt.Errorf("failed to create TTS instance: %w", err)
-	}
-
-	// Stream and write to file
-	chunkChan, errChan := tts.Stream(ctx)
-
-	totalBytes := 0
-
-	for {
-		select {
-		case chunk, ok := <-chunkChan:
-			if !ok {
-				// Stream completed
-				return filename, nil
-			}
-
-			if chunk.Type == "audio" {
-				n, err := audioFile.Write(chunk.Data)
-				if err != nil {
-					return "", fmt.Errorf("failed to write audio data: %w", err)
-				}
-				totalBytes += n
-			}
-		case err, ok := <-errChan:
-			// Check if channel is closed without error (normal completion)
-			if !ok {
-				return filename, nil
-			}
-			// Check if it's a nil error (which might indicate normal completion)
-			if err == nil {
-				return filename, nil
-			}
-			// Check if it's the stream completion signal
-			if err == errStreamComplete {
-				return filename, nil
-			}
-			return "", err
-		case <-ctx.Done():
-			return "", ctx.Err()
-		}
-	}
+	return outputPath, nil
 }
 
 // GetAudioBytes gets audio as bytes (corrected method name)
 func (e *EdgeTTS) GetAudioBytes(text string) ([]byte, error) {
-	ctx := context.Background()
+	var buf bytes.Buffer
+	if err := synthesizeTo(context.Background(), text, e.Config, &buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
 
-	// Create new instance with the provided text
-	tts, err := newEdgeWithConfig(text, e.Config)
+// writeFileAtomic 先写同目录临时文件，成功后 rename 到目标路径。
+// 失败时删除临时文件并保持目标文件原样（避免 os.Create 提前截断已有文件）。
+func writeFileAtomic(path string, write func(io.Writer) error) error {
+	// os.CreateTemp 固定创建 0600，这里沿用目标文件已有权限；
+	// 目标不存在时用 0644（与原 os.Create + 常规 umask 的结果一致）。
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp*")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create TTS instance: %w", err)
+		return fmt.Errorf("创建临时文件失败: %w", err)
 	}
-
-	// Stream and collect audio data
-	chunkChan, errChan := tts.Stream(ctx)
-
-	var audioData []byte
-
-	for {
-		select {
-		case chunk, ok := <-chunkChan:
-			if !ok {
-				return audioData, nil
-			}
-
-			if chunk.Type == "audio" {
-				audioData = append(audioData, chunk.Data...)
-			}
-		case err := <-errChan:
-			return nil, err
-		case <-ctx.Done():
-			return nil, ctx.Err()
+	tmpName := tmp.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(tmpName)
 		}
+	}()
+
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("设置临时文件权限失败: %w", err)
 	}
+
+	if err := write(tmp); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("关闭临时文件失败: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("替换目标文件失败: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 // Stream streams audio and metadata from the service
@@ -484,6 +411,16 @@ func relayEdgeStream(ctx context.Context, chunks <-chan *TTSChunk, errs <-chan e
 		select {
 		case chunk, ok := <-chunks:
 			if !ok {
+				// chunks 已关闭：先取走 errs 中可能已缓冲的最终错误。
+				// streamSingle 先发错误再关闭通道，若此处直接 return nil，
+				// select 随机命中本分支会静默丢弃真实错误（音频被截断却报告成功）。
+				select {
+				case err := <-errs:
+					if err != nil {
+						return err
+					}
+				default:
+				}
 				return nil
 			}
 			select {
@@ -549,6 +486,17 @@ func forwardEdgeAudio(ctx context.Context, chunks <-chan *TTSChunk, errs <-chan 
 	}
 }
 
+// classifyReadError 把 WebSocket 读取错误转换为需要上报的错误。
+// Edge 的正常结束由 turn.end 文本消息触发（handleTextMessage 返回 errStreamComplete），
+// 所以任何读取错误——包括读超时——都表明音频被截断，不能当作正常结束。
+func classifyReadError(err error) error {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return fmt.Errorf("WebSocket 读取超时（音频可能不完整）: %w", err)
+	}
+	return fmt.Errorf("failed to read WebSocket message: %w", err)
+}
+
 // SynthesizeStream 流式合成 Edge 文本：把音频块直接写入 w。
 // 播放模式固定标准分段（ContinuousPlayback=false）：实测 true 对 >4096 字节
 // 文本只发第一段并报 websocket close 1007 SSML is invalid。
@@ -558,13 +506,7 @@ func (e *EdgeTTS) SynthesizeStream(ctx context.Context, text string, w io.Writer
 	}
 	cfg := *e.Config
 	cfg.ContinuousPlayback = false
-	inst, err := newEdgeWithConfig(text, &cfg)
-	if err != nil {
-		return fmt.Errorf("构造 Edge 合成实例失败: %w", err)
-	}
-	timing.Logf("tts: Edge 切分为 %d 段", len(inst.Texts))
-	chunks, errs := inst.Stream(ctx)
-	return forwardEdgeAudio(ctx, chunks, errs, w)
+	return synthesizeTo(ctx, text, &cfg, w)
 }
 
 // Helper methods for WebSocket communication
@@ -706,19 +648,10 @@ func (e *EdgeTTS) streamSingle(ctx context.Context) (<-chan *TTSChunk, <-chan er
 
 				messageType, data, err := wsConn.ReadMessage()
 				if err != nil {
-					// Check if it's a timeout error
-					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-						// Timeout might be normal - check if we received audio
-						if audioWasReceived {
-							return
-						} else {
-							errChan <- fmt.Errorf("WebSocket read timeout before receiving audio: %w", err)
-							return
-						}
-					} else {
-						errChan <- fmt.Errorf("failed to read WebSocket message: %w", err)
-						return
-					}
+					// 正常结束由 turn.end 文本消息触发（handleTextMessage 返回 errStreamComplete），
+					// 因此这里任何读取错误（含超时）都意味着音频被截断，必须上报。
+					errChan <- classifyReadError(err)
+					return
 				}
 
 				messageCount++

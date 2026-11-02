@@ -2,7 +2,9 @@ package player
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -73,5 +75,31 @@ func TestDecodeAudio_opus(t *testing.T) {
 	}
 	if len(dec.pcm) == 0 {
 		t.Error("Opus 解码后 PCM 为空")
+	}
+}
+
+// TestEnsureAudioContextNoBackend：没有任何音频后端时，必须返回错误而不是“看起来可用”的 context。
+// oto 的 context 进程内唯一，且音频后端选择依赖进程启动时的环境变量，
+// 因此在子进程中设置 PULSE_SERVER / ALSA_CONFIG_PATH 后再验证。
+func TestEnsureAudioContextNoBackend(t *testing.T) {
+	if os.Getenv("EDGETTS_NO_AUDIO_PROBE") == "1" {
+		if _, err := ensureAudioContext(24000, 2); err == nil {
+			t.Fatal("无音频后端时 ensureAudioContext 应返回错误")
+		}
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestEnsureAudioContextNoBackend$", "-test.v")
+	cmd.Env = append(os.Environ(),
+		"EDGETTS_NO_AUDIO_PROBE=1",
+		"PULSE_SERVER=unix:/nonexistent-pulse",
+		"ALSA_CONFIG_PATH=/dev/null",
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("子进程失败: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "PASS") {
+		t.Fatalf("子进程未通过:\n%s", out)
 	}
 }

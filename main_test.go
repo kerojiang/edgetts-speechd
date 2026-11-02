@@ -299,3 +299,21 @@ func TestRunListEdgeNoWarnWithoutDoubaoOptions(t *testing.T) {
 		t.Errorf("不应有警告，实际 stderr = %q", stderr.String())
 	}
 }
+
+// TestPreferPlayErr：播放端错误必须优先返回。
+// 播放失败时会通过 pipe 反向污染合成端（"写入音频流失败"），
+// 若返回被污染的错误会掩盖真实原因。
+func TestPreferPlayErr(t *testing.T) {
+	playErr := errors.New("音频设备不可用")
+	synthErr := errors.New("写入音频流失败: io: read/write on closed pipe")
+
+	if got := preferPlayErr(playErr, synthErr); !errors.Is(got, playErr) {
+		t.Fatalf("got %v, 期望播放错误 %v", got, playErr)
+	}
+	if got := preferPlayErr(nil, synthErr); !errors.Is(got, synthErr) {
+		t.Fatalf("got %v, 期望合成错误 %v", got, synthErr)
+	}
+	if got := preferPlayErr(nil, nil); got != nil {
+		t.Fatalf("got %v, 期望 nil", got)
+	}
+}

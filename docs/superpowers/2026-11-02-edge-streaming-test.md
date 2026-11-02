@@ -143,3 +143,32 @@ go test -tags integration ./player/ -count=1 -run TestPlayMP3Stream -v
 1. 首声数据来自本机同一网络环境，未覆盖跨地域/弱网。
 2. 多段完整播放只测了 2 段（4201 字节）；更多段数未逐档测试（多段逻辑与段数无关）。
 3. `-o` 多段场景仍受旧默认 `--continuous` 影响（本次未改变 `-o` 行为），可用 `--no-continuous` 规避。
+
+## 最终审查后的修复与复测（同日）
+
+独立审查发现 1 个 Critical、6 个 Important，均已修复并补测试：
+
+| 问题 | 根因 | 修复 | 回归测试 |
+|---|---|---|---|
+| Critical：真实流错误被静默丢弃 | `relayEdgeStream` 在 `chunks` 关闭时直接 `return nil`，`select` 随机命中的情况下已缓冲的 `errs` 错误被丢弃（音频截断却报成功） | `chunks` 关闭时非阻塞取走 `errs` 缓冲值，有错误则返回 | `TestRelayEdgeStreamReportsBufferedErrorWhenChunksClose`（循环 500 次，旧实现第 1 次即失败） |
+| `GetAudioFile`/`GetAudioFileTo`/`GetAudioBytes` 零音频成功退出、错误可能丢失 | 三个方法各自重复实现 channel 循环 | 统一走 `synthesizeTo` → `forwardEdgeAudio`（错误优先、零音频报错） | `TestForwardEdgeAudioPropagatesError` / `TestForwardEdgeAudioRejectsEmpty` |
+| `-o` 失败会破坏已有文件 | 先 `os.Create` 截断目标，再合成 | `writeFileAtomic`：同目录临时文件 → 成功后 `rename`；保留原权限（新文件 0644） | `TestWriteFileAtomicSuccess` / `TestWriteFileAtomicPreservesTargetOnError` / `TestWriteFileAtomicPreservesMode` |
+| 无音频后端时“静默成功” | `oto.NewContext` 是异步初始化，未等 `ready` 就当作可用 | `ensureAudioContext` 等 `ready` 关闭后检查 `Context.Err()`（上限 10s） | `TestEnsureAudioContextNoBackend`（子进程 + `PULSE_SERVER`/`ALSA_CONFIG_PATH` 指向无效后端） |
+| WebSocket 读超时被当作正常结束 | `audioWasReceived` 为真时超时直接 `return` | 超时一律上报 `WebSocket 读取超时（音频可能不完整）`；正常结束只走 `turn.end` | `TestClassifyReadError` |
+| 播放错误被 `context.Canceled`/pipe 副作用遮盖 | 先 `cancel()` 再 `CloseWithError`，合成端先返回取消错误 | 先 `CloseWithError(playErr)` 再 `cancel()`；`preferPlayErr` 播放错误优先 | `TestPreferPlayErr` |
+
+修复后复测（同一环境、同一文本 2220 字节 / 约 740 字）：
+
+| 场景 | 次数 | 首声范围 | 是否 ≤2s |
+|---|---|---|---|
+| Edge 直跑 | 20 | 957-1746ms | 20/20 |
+| 豆包直跑 | 20 | 1074-1339ms | 20/20 |
+| speechd 路径 | 5 | 1146-1329ms | 5/5 |
+
+`-o` 复测：
+
+- 短文本：exit=0，14832 字节，权限 0644，stdout 打印路径，无发声。
+- 多段文本 + `--no-continuous`：exit=0，3275568 字节。
+- 多段文本（默认 `--continuous`）：exit=1，报 `websocket: close 1007 ... SSML is invalid`，且目标文件原内容 `ORIGINAL` 保持不变（旧实现会被截断为 0 字节）。
+
+测试：`go build ./...`、`go vet ./...`、`go test ./...`、`go test -tags integration ./player/`、`EDGETTS_NET_TEST=1 go test ./tts/ -run "TestEdgeMultiSegmentReal|TestEdgeSynthesizeStreamMultiSegmentReal|TestSynthesizeStreamFirstSegmentAlone"` 全部通过。

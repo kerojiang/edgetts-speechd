@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -94,5 +95,132 @@ func TestEdgeSynthesizeStreamMultiSegmentReal(t *testing.T) {
 	t.Logf("整段 MP3 = %d 字节，仅第 1 段 = %d 字节", whole.Len(), first.Len())
 	if whole.Len() <= first.Len() {
 		t.Fatalf("流式输出只包含第 1 段：%d <= %d", whole.Len(), first.Len())
+	}
+}
+
+// TestWriteFileAtomicSuccess：成功后目标文件内容正确，且不残留临时文件。
+func TestWriteFileAtomicSuccess(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.mp3")
+	if err := writeFileAtomic(path, func(w io.Writer) error {
+		_, err := w.Write([]byte("audio-bytes"))
+		return err
+	}); err != nil {
+		t.Fatalf("writeFileAtomic 失败: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读取目标文件失败: %v", err)
+	}
+	if string(data) != "audio-bytes" {
+		t.Fatalf("内容 = %q, 期望 %q", data, "audio-bytes")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("目录中残留文件: %v", entries)
+	}
+}
+
+// TestWriteFileAtomicPreservesTargetOnError：写入失败时目标文件必须保持原样，临时文件必须清理。
+func TestWriteFileAtomicPreservesTargetOnError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.mp3")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("合成失败")
+	err := writeFileAtomic(path, func(w io.Writer) error {
+		_, _ = w.Write([]byte("partial"))
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, 期望 %v", err, wantErr)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读取目标文件失败: %v", err)
+	}
+	if string(data) != "original" {
+		t.Fatalf("失败时破坏了目标文件，内容 = %q", data)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("失败后残留临时文件: %v", entries)
+	}
+}
+
+// fakeTimeoutError 模拟 net.Error 的读超时。
+type fakeTimeoutError struct{}
+
+func (fakeTimeoutError) Error() string   { return "i/o timeout" }
+func (fakeTimeoutError) Timeout() bool   { return true }
+func (fakeTimeoutError) Temporary() bool { return true }
+
+// TestClassifyReadError：读超时与普通错误都必须上报，且保留原始错误。
+// Edge 的正常结束走 turn.end（handleTextMessage 返回 errStreamComplete），
+// 因此任何 ReadMessage 错误都意味着音频被截断。
+func TestClassifyReadError(t *testing.T) {
+	timeoutErr := fakeTimeoutError{}
+	got := classifyReadError(timeoutErr)
+	if got == nil {
+		t.Fatal("读超时必须返回错误")
+	}
+	if !errors.Is(got, timeoutErr) {
+		t.Fatalf("未保留原始错误: %v", got)
+	}
+	if !strings.Contains(got.Error(), "超时") {
+		t.Fatalf("错误信息未说明超时: %v", got)
+	}
+
+	plainErr := errors.New("connection reset by peer")
+	got = classifyReadError(plainErr)
+	if !errors.Is(got, plainErr) {
+		t.Fatalf("普通错误未保留原文: %v", got)
+	}
+	if !strings.Contains(got.Error(), "failed to read WebSocket message") {
+		t.Fatalf("普通错误缺少上下文: %v", got)
+	}
+}
+
+// TestWriteFileAtomicPreservesMode：替换已有文件时保留原权限，新建文件用 0644。
+func TestWriteFileAtomicPreservesMode(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "existing.mp3")
+	if err := os.WriteFile(existing, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFileAtomic(existing, func(w io.Writer) error {
+		_, err := w.Write([]byte("new"))
+		return err
+	}); err != nil {
+		t.Fatalf("writeFileAtomic 失败: %v", err)
+	}
+	info, err := os.Stat(existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Fatalf("已有文件权限 = %o, 期望 640", got)
+	}
+
+	fresh := filepath.Join(dir, "fresh.mp3")
+	if err := writeFileAtomic(fresh, func(w io.Writer) error {
+		_, err := w.Write([]byte("new"))
+		return err
+	}); err != nil {
+		t.Fatalf("writeFileAtomic 失败: %v", err)
+	}
+	info, err = os.Stat(fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Fatalf("新文件权限 = %o, 期望 644", got)
 	}
 }

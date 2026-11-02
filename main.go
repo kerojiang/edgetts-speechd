@@ -411,14 +411,20 @@ func streamPlayEdge(et *tts.EdgeTTS, text string) error {
 	}()
 
 	playErr := player.PlayMP3Stream(pr)
+	// 先让合成端以 playErr 解除 Write 阻塞，再取消 ctx：
+	// 若先 cancel，合成端会返回 context.Canceled 并遮盖真实的播放错误。
+	_ = pr.CloseWithError(playErr)
 	cancel()
-	_ = pr.CloseWithError(playErr) // 播放提前结束时解除合成方 Write 阻塞
 	sErr := <-synthErr
+	return preferPlayErr(playErr, sErr)
+}
+
+// preferPlayErr 决定最终上报的错误：播放端错误优先。
+// 播放失败会让 pipe 反向污染合成端（返回“写入音频流失败”），
+// 那只是副作用，不能用来覆盖真实原因。
+func preferPlayErr(playErr, synthErr error) error {
 	if playErr != nil {
-		if sErr != nil {
-			return sErr
-		}
 		return playErr
 	}
-	return sErr
+	return synthErr
 }

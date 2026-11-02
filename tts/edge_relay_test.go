@@ -101,3 +101,22 @@ func TestEdgeMultiSegmentReal(t *testing.T) {
 		t.Fatalf("多段音频不完整：%d != %d", len(wholeBytes), sum)
 	}
 }
+
+// TestRelayEdgeStreamReportsBufferedErrorWhenChunksClose：
+// chunks 关闭时若 errs 已缓冲真实错误，必须返回该错误。
+// 旧实现先命中已关闭的 chunks 分支直接 return nil，select 随机性会导致约一半概率静默丢弃错误。
+func TestRelayEdgeStreamReportsBufferedErrorWhenChunksClose(t *testing.T) {
+	want := errors.New("websocket: close 1007 SSML is invalid")
+	for i := 0; i < 500; i++ {
+		chunks := make(chan *TTSChunk)
+		errs := make(chan error, 1)
+		errs <- want
+		close(errs)
+		close(chunks)
+
+		err := relayEdgeStream(context.Background(), chunks, errs, make(chan *TTSChunk))
+		if !errors.Is(err, want) {
+			t.Fatalf("第 %d 次：err = %v，期望 %v（chunks 关闭时丢弃了已缓冲错误）", i, err, want)
+		}
+	}
+}
