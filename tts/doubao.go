@@ -87,6 +87,10 @@ func (d *DoubaoTTS) GetAudioFileTo(text string, outputPath string) (string, erro
 	return outputPath, nil
 }
 
+// doubaoDialer 是建立豆包 WebSocket 连接用的 dialer。
+// 抽成包级变量，便于测试注入（例如强制 IPv4 做链路对照）。
+var doubaoDialer = websocket.Dialer{HandshakeTimeout: 15 * time.Second}
+
 // SynthesizeStream 流式合成文本：把文本切成多段并行合成，按顺序写入 out。
 // 每段是独立 Ogg Opus 流（含 OpusHead）。合成方负责 close(out)。
 // 首段合成完成即写入 out，使播放方可立即开始（首声 ≈ 首段合成时间）。
@@ -103,8 +107,22 @@ func (d *DoubaoTTS) SynthesizeStream(text string, out chan<- []byte) error {
 	}
 	timing.Logf("tts: 切分为 %d 段", len(segments))
 
-	// 每段一个缓冲 channel，并行合成
-	segChans := make([]chan []byte, len(segments))
+	// 首段单独合成：实测 6 路并发建连会把首段 TTFB 长尾放大到 5-8s，
+	// 单请求时 20 次采样全部在 0.9-1.3s。首段完成后才启动其余段并发。
+	first, err := d.synthesizeWithRetry(segments[0])
+	if err != nil {
+		return fmt.Errorf("第 1 段合成失败: %w", err)
+	}
+	timing.Logf("tts: 第 1 段合成完成（%d 字节，单独请求）", len(first))
+	out <- first
+
+	if len(segments) == 1 {
+		return nil
+	}
+
+	// 其余段并行合成（每段一个缓冲 channel，按序输出）
+	rest := segments[1:]
+	segChans := make([]chan []byte, len(rest))
 	for i := range segChans {
 		segChans[i] = make(chan []byte, 1)
 	}
@@ -114,7 +132,7 @@ func (d *DoubaoTTS) SynthesizeStream(text string, out chan<- []byte) error {
 	var mu sync.Mutex
 	var firstErr error
 
-	for i, segment := range segments {
+	for i, segment := range rest {
 		wg.Add(1)
 		go func(idx int, seg string) {
 			defer wg.Done()
@@ -131,7 +149,7 @@ func (d *DoubaoTTS) SynthesizeStream(text string, out chan<- []byte) error {
 				close(segChans[idx])
 				return
 			}
-			timing.Logf("tts: 第 %d 段合成完成（%d 字节）", idx+1, len(data))
+			timing.Logf("tts: 第 %d 段合成完成（%d 字节）", idx+2, len(data))
 			segChans[idx] <- data
 		}(i, segment)
 	}
@@ -143,9 +161,9 @@ func (d *DoubaoTTS) SynthesizeStream(text string, out chan<- []byte) error {
 		if !ok {
 			// 段合成失败
 			if firstErr != nil {
-				writeErr = fmt.Errorf("第 %d 段合成失败: %w", i+1, firstErr)
+				writeErr = fmt.Errorf("第 %d 段合成失败: %w", i+2, firstErr)
 			} else {
-				writeErr = fmt.Errorf("第 %d 段合成失败", i+1)
+				writeErr = fmt.Errorf("第 %d 段合成失败", i+2)
 			}
 			break
 		}
@@ -276,8 +294,7 @@ func (d *DoubaoTTS) synthesize(text string, cookie string) ([]byte, error) {
 	header.Set("Cookie", cookie)
 	header.Set("User-Agent", doubaoUserAgent)
 
-	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second}
-	conn, resp, err := dialer.Dial(wsURL, header)
+	conn, resp, err := doubaoDialer.Dial(wsURL, header)
 	if err != nil {
 		if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
 			return nil, fmt.Errorf("%w: WebSocket 握手被拒绝（HTTP %d）", ErrDoubaoAuth, resp.StatusCode)
